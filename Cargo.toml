@@ -7,6 +7,7 @@ description = "A native reimplementation of Might and Magic Book One"
 [dependencies]
 crossterm = "0.29.0"
 pixels = "0.15.0"
+rodio = "0.22.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 winit = "0.30.11"

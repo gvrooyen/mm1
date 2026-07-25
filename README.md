@@ -53,10 +53,13 @@ The detailed findings are recorded in
 The project is currently in the reverse-engineering and early implementation
 phase. The major binary containers are understood well enough to build lossless
 readers. A basic Rust executable presents a procedurally drawn, palette-indexed
-320x200 title screen in a 960x600 window using `pixels` and `winit`.
+320x200 title screen in a 960x600 window using `pixels` and `winit`, with the
+original PC-speaker title sequence rendered to MP3 and played through `rodio`.
 
 The title screen is a scaffold, not decoded original artwork. Pressing any key
-exits the executable; closing the graphical window exits it as well.
+exits the executable; closing the graphical window exits it as well. If an
+audio device or the title music is unavailable, the executable reports the
+problem on stderr and continues without audio.
 
 Important remaining research includes:
 
@@ -98,9 +101,9 @@ through all 76 pictures decoded from `dos/MONPIX.DTA`. Press Escape or Ctrl-C to
 quit. The other menu entries are placeholders and do nothing when selected.
 
 The executable can report the current player view as versioned JSON without
-initializing a window or graphics device. It writes and flushes the view, then
-waits for a keypress before exiting. This mode is intended for automated tests
-and non-graphical clients:
+initializing a window, graphics device, or audio device. It writes and flushes
+the view, then waits for a keypress before exiting. This mode is intended for
+automated tests and non-graphical clients:
 
 ```sh
 cargo run -- --headless

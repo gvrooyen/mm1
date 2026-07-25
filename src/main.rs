@@ -1,13 +1,15 @@
 use std::{
     env,
     error::Error,
-    fs,
+    fs::{self, File},
     io::{self, IsTerminal, Read, Write},
     sync::Arc,
+    time::Duration,
 };
 
 use crossterm::{event, terminal};
 use pixels::{Pixels, SurfaceTexture};
+use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
 use serde::Serialize;
 use winit::{
     application::ApplicationHandler,
@@ -21,6 +23,8 @@ use winit::{
 const WIDTH: u32 = 320;
 const HEIGHT: u32 = 200;
 const SCALE: u32 = 3;
+const TITLE_MUSIC_PATH: &str = "assets/intro.mp3";
+const TITLE_PICKUP_DURATION: Duration = Duration::from_micros(219_702);
 
 const BLACK: u8 = 0;
 const CYAN: u8 = 1;
@@ -141,7 +145,7 @@ impl Drop for RawModeGuard {
 
 fn run_windowed() -> Result<(), Box<dyn Error>> {
     let event_loop = EventLoop::new()?;
-    let mut app = GameWindow::new();
+    let mut app = GameWindow::new(TitleMusic::start());
     event_loop.run_app(&mut app)?;
     Ok(())
 }
@@ -408,18 +412,53 @@ fn read_u32(data: &[u8], offset: usize) -> Result<u32, String> {
     Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
+struct TitleMusic {
+    _device: MixerDeviceSink,
+    _player: Player,
+}
+
+impl TitleMusic {
+    fn start() -> Option<Self> {
+        match Self::try_start() {
+            Ok(music) => Some(music),
+            Err(error) => {
+                eprintln!("could not play title music: {error}");
+                None
+            }
+        }
+    }
+
+    fn try_start() -> Result<Self, Box<dyn Error>> {
+        let mut device = DeviceSinkBuilder::open_default_sink()?;
+        device.log_on_drop(false);
+        let player = Player::connect_new(device.mixer());
+        player.append(Decoder::try_from(File::open(TITLE_MUSIC_PATH)?)?);
+        player.append(
+            Decoder::try_from(File::open(TITLE_MUSIC_PATH)?)?
+                .skip_duration(TITLE_PICKUP_DURATION)
+                .repeat_infinite(),
+        );
+        Ok(Self {
+            _device: device,
+            _player: player,
+        })
+    }
+}
+
 struct GameWindow {
     window: Option<Arc<Window>>,
     pixels: Option<Pixels<'static>>,
     framebuffer: Vec<u8>,
+    _title_music: Option<TitleMusic>,
 }
 
 impl GameWindow {
-    fn new() -> Self {
+    fn new(title_music: Option<TitleMusic>) -> Self {
         Self {
             window: None,
             pixels: None,
             framebuffer: title_framebuffer(),
+            _title_music: title_music,
         }
     }
 }
@@ -652,6 +691,12 @@ mod tests {
         assert_eq!(value["view"]["kind"], "title");
         assert_eq!(value["view"]["width"], 320);
         assert_eq!(value["view"]["height"], 200);
+    }
+
+    #[test]
+    fn title_music_is_a_decodable_mp3() {
+        let decoder = Decoder::try_from(File::open(TITLE_MUSIC_PATH).unwrap()).unwrap();
+        assert!(decoder.take(1).next().is_some());
     }
 
     #[test]

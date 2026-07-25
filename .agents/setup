@@ -16,6 +16,7 @@ fi
   ca-certificates \
   curl \
   imagemagick \
+  libasound2-dev \
   libwayland-dev \
   libxkbcommon-dev \
   libxkbcommon-x11-0 \
