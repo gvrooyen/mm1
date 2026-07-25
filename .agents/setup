@@ -15,11 +15,15 @@ fi
   build-essential \
   ca-certificates \
   curl \
+  imagemagick \
   libwayland-dev \
   libxkbcommon-dev \
   libxkbcommon-x11-0 \
   pkg-config \
-  wayland-protocols
+  wayland-protocols \
+  xauth \
+  xdotool \
+  xvfb
 
 export PATH="$HOME/.cargo/bin:$PATH"
 

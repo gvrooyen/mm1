@@ -86,6 +86,17 @@ Run the graphical title screen:
 cargo run
 ```
 
+Browse the original game assets without showing the title screen:
+
+```sh
+cargo run -- --browse
+```
+
+The browser's arrow-key-driven top-level menu contains maps, monsters, walls,
+and roster entries. Currently only `MONSTERS` opens: use the arrow keys to move
+through all 76 pictures decoded from `dos/MONPIX.DTA`. Press Escape or Ctrl-C to
+quit. The other menu entries are placeholders and do nothing when selected.
+
 The executable can report the current player view as versioned JSON without
 initializing a window or graphics device. It writes and flushes the view, then
 waits for a keypress before exiting. This mode is intended for automated tests

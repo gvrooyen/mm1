@@ -1,6 +1,7 @@
 use std::{
     env,
     error::Error,
+    fs,
     io::{self, IsTerminal, Read, Write},
     sync::Arc,
 };
@@ -13,6 +14,7 @@ use winit::{
     dpi::{LogicalSize, PhysicalSize},
     event::{ElementState, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
+    keyboard::{Key, ModifiersState, NamedKey},
     window::{Window, WindowId},
 };
 
@@ -65,28 +67,39 @@ impl PlayerView<'static> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let headless = parse_args()?;
+    let args = parse_args()?;
     let view = PlayerView::title_screen();
 
-    if headless {
+    if args.headless {
         println!("{}", serde_json::to_string_pretty(&view)?);
         io::stdout().flush()?;
         wait_for_headless_keypress()?;
         return Ok(());
     }
 
+    if args.browse {
+        return run_asset_browser();
+    }
+
     run_windowed()
 }
 
-fn parse_args() -> Result<bool, String> {
-    let mut headless = false;
+#[derive(Default)]
+struct Args {
+    headless: bool,
+    browse: bool,
+}
+
+fn parse_args() -> Result<Args, String> {
+    let mut args = Args::default();
 
     for arg in env::args().skip(1) {
         match arg.as_str() {
-            "--headless" => headless = true,
+            "--headless" => args.headless = true,
+            "--browse" => args.browse = true,
             "-h" | "--help" => {
                 println!(
-                    "Usage: mm1 [--headless]\n\n  --headless  Print the current player view as JSON, then wait for a keypress"
+                    "Usage: mm1 [--headless | --browse]\n\n  --headless  Print the current player view as JSON, then wait for a keypress\n  --browse    Browse original game assets"
                 );
                 std::process::exit(0);
             }
@@ -94,7 +107,11 @@ fn parse_args() -> Result<bool, String> {
         }
     }
 
-    Ok(headless)
+    if args.headless && args.browse {
+        return Err("--headless and --browse cannot be used together".into());
+    }
+
+    Ok(args)
 }
 
 fn wait_for_headless_keypress() -> io::Result<()> {
@@ -127,6 +144,268 @@ fn run_windowed() -> Result<(), Box<dyn Error>> {
     let mut app = GameWindow::new();
     event_loop.run_app(&mut app)?;
     Ok(())
+}
+
+fn run_asset_browser() -> Result<(), Box<dyn Error>> {
+    let monster_data = fs::read("dos/MONPIX.DTA")?;
+    let monsters = decode_monsters(&monster_data)?;
+    let event_loop = EventLoop::new()?;
+    let mut app = AssetBrowser::new(monsters);
+    event_loop.run_app(&mut app)?;
+    Ok(())
+}
+
+const BROWSER_ITEMS: [&str; 4] = ["MAPS", "MONSTERS", "WALLS", "ROSTER"];
+
+enum BrowserPage {
+    Menu,
+    Monsters,
+}
+
+struct AssetBrowser {
+    window: Option<Arc<Window>>,
+    pixels: Option<Pixels<'static>>,
+    framebuffer: Vec<u8>,
+    monsters: Vec<Vec<u8>>,
+    page: BrowserPage,
+    selection: usize,
+    monster: usize,
+    modifiers: ModifiersState,
+}
+
+impl AssetBrowser {
+    fn new(monsters: Vec<Vec<u8>>) -> Self {
+        let mut browser = Self {
+            window: None,
+            pixels: None,
+            framebuffer: vec![BLACK; (WIDTH * HEIGHT) as usize],
+            monsters,
+            page: BrowserPage::Menu,
+            selection: 0,
+            monster: 0,
+            modifiers: ModifiersState::empty(),
+        };
+        browser.redraw_framebuffer();
+        browser
+    }
+
+    fn redraw_framebuffer(&mut self) {
+        self.framebuffer.fill(BLACK);
+        match self.page {
+            BrowserPage::Menu => {
+                draw_dos_text(&mut self.framebuffer, 104, 28, "ASSET BROWSER", WHITE);
+                for (index, item) in BROWSER_ITEMS.iter().enumerate() {
+                    let y = 70 + index as u32 * 24;
+                    if index == self.selection {
+                        fill_rect(&mut self.framebuffer, 112, y - 4, 96, 16, WHITE);
+                        draw_dos_text(&mut self.framebuffer, 120, y, item, BLACK);
+                    } else {
+                        draw_dos_text(&mut self.framebuffer, 120, y, item, WHITE);
+                    }
+                }
+            }
+            BrowserPage::Monsters => {
+                let image = &self.monsters[self.monster];
+                for y in 0..96usize {
+                    let source = &image[y * 104..(y + 1) * 104];
+                    let destination = (32 + y) * WIDTH as usize + 108;
+                    self.framebuffer[destination..destination + 104].copy_from_slice(source);
+                }
+                draw_dos_text(&mut self.framebuffer, 120, 16, "MONSTERS", WHITE);
+                let position = format!("{:02} / {:02}", self.monster + 1, self.monsters.len());
+                draw_dos_text(&mut self.framebuffer, 124, 144, &position, WHITE);
+                draw_dos_text(
+                    &mut self.framebuffer,
+                    60,
+                    176,
+                    "ARROWS: PREVIOUS / NEXT",
+                    CYAN,
+                );
+            }
+        }
+    }
+
+    fn key_pressed(&mut self, key: &Key) {
+        match self.page {
+            BrowserPage::Menu => match key {
+                Key::Named(NamedKey::ArrowUp) => {
+                    self.selection = self
+                        .selection
+                        .checked_sub(1)
+                        .unwrap_or(BROWSER_ITEMS.len() - 1);
+                }
+                Key::Named(NamedKey::ArrowDown) => {
+                    self.selection = (self.selection + 1) % BROWSER_ITEMS.len();
+                }
+                Key::Named(NamedKey::Enter) if self.selection == 1 => {
+                    self.page = BrowserPage::Monsters;
+                }
+                _ => return,
+            },
+            BrowserPage::Monsters => match key {
+                Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) => {
+                    self.monster = self
+                        .monster
+                        .checked_sub(1)
+                        .unwrap_or(self.monsters.len() - 1);
+                }
+                Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) => {
+                    self.monster = (self.monster + 1) % self.monsters.len();
+                }
+                _ => return,
+            },
+        }
+        self.redraw_framebuffer();
+    }
+}
+
+impl ApplicationHandler for AssetBrowser {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
+
+        let window = Arc::new(
+            event_loop
+                .create_window(
+                    Window::default_attributes()
+                        .with_title("Might and Magic Asset Browser")
+                        .with_inner_size(LogicalSize::new(WIDTH * SCALE, HEIGHT * SCALE))
+                        .with_min_inner_size(LogicalSize::new(WIDTH, HEIGHT)),
+                )
+                .expect("could not create the asset browser window"),
+        );
+        let size = window.inner_size();
+        let surface = SurfaceTexture::new(size.width, size.height, window.clone());
+        self.pixels = Some(
+            Pixels::new(WIDTH, HEIGHT, surface)
+                .expect("could not create the asset browser rendering surface"),
+        );
+        self.window = Some(window);
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                let ctrl_c = self.modifiers.control_key()
+                    && matches!(&event.logical_key, Key::Character(character) if character.eq_ignore_ascii_case("c"));
+                if event.logical_key == Key::Named(NamedKey::Escape) || ctrl_c {
+                    event_loop.exit();
+                } else {
+                    self.key_pressed(&event.logical_key);
+                }
+            }
+            WindowEvent::Resized(PhysicalSize { width, height }) if width > 0 && height > 0 => {
+                if let Some(pixels) = self.pixels.as_mut()
+                    && let Err(error) = pixels.resize_surface(width, height)
+                {
+                    eprintln!("could not resize the window surface: {error}");
+                    event_loop.exit();
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                if let Some(pixels) = self.pixels.as_mut() {
+                    copy_to_rgba(&self.framebuffer, pixels.frame_mut());
+                    if let Err(error) = pixels.render() {
+                        eprintln!("could not render the asset browser: {error}");
+                        event_loop.exit();
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+}
+
+fn decode_monsters(data: &[u8]) -> Result<Vec<Vec<u8>>, String> {
+    let index_bytes = read_u16(data, 0)? as usize;
+    if index_bytes == 0 || !index_bytes.is_multiple_of(4) {
+        return Err("MONPIX.DTA has an invalid index size".into());
+    }
+    let object_data_start = 2 + index_bytes;
+    if object_data_start > data.len() {
+        return Err("MONPIX.DTA index extends past the end of the file".into());
+    }
+
+    (0..index_bytes / 4)
+        .map(|index| {
+            let offset_position = 2 + index * 4;
+            let offset = read_u32(data, offset_position)? as usize;
+            let record_start = object_data_start
+                .checked_add(offset)
+                .ok_or("MONPIX.DTA record offset overflow")?;
+            let compressed_size = read_u16(data, record_start)? as usize;
+            let payload_start = record_start + 2;
+            let payload_end = payload_start
+                .checked_add(compressed_size)
+                .ok_or("MONPIX.DTA record size overflow")?;
+            let payload = data
+                .get(payload_start..payload_end)
+                .ok_or("MONPIX.DTA record extends past the end of the file")?;
+            decode_monster(payload)
+        })
+        .collect()
+}
+
+fn decode_monster(compressed: &[u8]) -> Result<Vec<u8>, String> {
+    let mut packed = Vec::with_capacity(2496);
+    let mut position = 0;
+    while position < compressed.len() {
+        let value = compressed[position];
+        position += 1;
+        if value == 0x7b {
+            let run = compressed
+                .get(position..position + 2)
+                .ok_or("truncated MONPIX.DTA RLE run")?;
+            packed.extend(std::iter::repeat_n(run[1], run[0] as usize + 1));
+            position += 2;
+        } else {
+            packed.push(value);
+        }
+    }
+    if packed.len() != 2496 {
+        return Err(format!(
+            "MONPIX.DTA image decoded to {} bytes instead of 2496",
+            packed.len()
+        ));
+    }
+
+    let mut pixels = vec![BLACK; 104 * 96];
+    for (stream_index, value) in packed.into_iter().enumerate() {
+        let byte_x = stream_index / 96;
+        let y = stream_index % 96;
+        for pixel in 0..4 {
+            pixels[y * 104 + byte_x * 4 + pixel] = (value >> (6 - pixel * 2)) & 3;
+        }
+    }
+    Ok(pixels)
+}
+
+fn read_u16(data: &[u8], offset: usize) -> Result<u16, String> {
+    let bytes = data
+        .get(offset..offset + 2)
+        .ok_or("unexpected end of MONPIX.DTA")?;
+    Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
+}
+
+fn read_u32(data: &[u8], offset: usize) -> Result<u32, String> {
+    let bytes = data
+        .get(offset..offset + 4)
+        .ok_or("unexpected end of MONPIX.DTA")?;
+    Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
 struct GameWindow {
@@ -246,6 +525,70 @@ fn fill_rect(frame: &mut [u8], x: u32, y: u32, width: u32, height: u32, color: u
     }
 }
 
+fn draw_dos_text(frame: &mut [u8], x: u32, y: u32, text: &str, color: u8) {
+    for (index, character) in text.chars().enumerate() {
+        for (row, bits) in dos_glyph(character).iter().enumerate() {
+            for column in 0..8 {
+                if bits & (0x80 >> column) != 0 {
+                    fill_rect(
+                        frame,
+                        x + index as u32 * 8 + column,
+                        y + row as u32,
+                        1,
+                        1,
+                        color,
+                    );
+                }
+            }
+        }
+    }
+}
+
+// The original DOS presentation uses the familiar 8x8 IBM PC character-cell style.
+fn dos_glyph(character: char) -> [u8; 8] {
+    match character {
+        'A' => [0x30, 0x78, 0xcc, 0xcc, 0xfc, 0xcc, 0xcc, 0x00],
+        'B' => [0xfc, 0x66, 0x66, 0x7c, 0x66, 0x66, 0xfc, 0x00],
+        'C' => [0x3c, 0x66, 0xc0, 0xc0, 0xc0, 0x66, 0x3c, 0x00],
+        'D' => [0xf8, 0x6c, 0x66, 0x66, 0x66, 0x6c, 0xf8, 0x00],
+        'E' => [0xfe, 0x62, 0x68, 0x78, 0x68, 0x62, 0xfe, 0x00],
+        'F' => [0xfe, 0x62, 0x68, 0x78, 0x68, 0x60, 0xf0, 0x00],
+        'G' => [0x3c, 0x66, 0xc0, 0xc0, 0xce, 0x66, 0x3e, 0x00],
+        'H' => [0xcc, 0xcc, 0xcc, 0xfc, 0xcc, 0xcc, 0xcc, 0x00],
+        'I' => [0x78, 0x30, 0x30, 0x30, 0x30, 0x30, 0x78, 0x00],
+        'J' => [0x1e, 0x0c, 0x0c, 0x0c, 0xcc, 0xcc, 0x78, 0x00],
+        'K' => [0xe6, 0x66, 0x6c, 0x78, 0x6c, 0x66, 0xe6, 0x00],
+        'L' => [0xf0, 0x60, 0x60, 0x60, 0x62, 0x66, 0xfe, 0x00],
+        'M' => [0xc6, 0xee, 0xfe, 0xfe, 0xd6, 0xc6, 0xc6, 0x00],
+        'N' => [0xc6, 0xe6, 0xf6, 0xde, 0xce, 0xc6, 0xc6, 0x00],
+        'O' => [0x38, 0x6c, 0xc6, 0xc6, 0xc6, 0x6c, 0x38, 0x00],
+        'P' => [0xfc, 0x66, 0x66, 0x7c, 0x60, 0x60, 0xf0, 0x00],
+        'Q' => [0x78, 0xcc, 0xcc, 0xcc, 0xdc, 0x78, 0x1c, 0x00],
+        'R' => [0xfc, 0x66, 0x66, 0x7c, 0x6c, 0x66, 0xe6, 0x00],
+        'S' => [0x78, 0xcc, 0xe0, 0x70, 0x1c, 0xcc, 0x78, 0x00],
+        'T' => [0xfc, 0xb4, 0x30, 0x30, 0x30, 0x30, 0x78, 0x00],
+        'U' => [0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0xfc, 0x00],
+        'V' => [0xcc, 0xcc, 0xcc, 0xcc, 0xcc, 0x78, 0x30, 0x00],
+        'W' => [0xc6, 0xc6, 0xc6, 0xd6, 0xfe, 0xee, 0xc6, 0x00],
+        'X' => [0xc6, 0xc6, 0x6c, 0x38, 0x6c, 0xc6, 0xc6, 0x00],
+        'Y' => [0xcc, 0xcc, 0xcc, 0x78, 0x30, 0x30, 0x78, 0x00],
+        'Z' => [0xfe, 0xc6, 0x8c, 0x18, 0x32, 0x66, 0xfe, 0x00],
+        '0' => [0x7c, 0xc6, 0xce, 0xde, 0xf6, 0xe6, 0x7c, 0x00],
+        '1' => [0x30, 0x70, 0x30, 0x30, 0x30, 0x30, 0xfc, 0x00],
+        '2' => [0x78, 0xcc, 0x0c, 0x38, 0x60, 0xcc, 0xfc, 0x00],
+        '3' => [0x78, 0xcc, 0x0c, 0x38, 0x0c, 0xcc, 0x78, 0x00],
+        '4' => [0x1c, 0x3c, 0x6c, 0xcc, 0xfe, 0x0c, 0x1e, 0x00],
+        '5' => [0xfc, 0xc0, 0xf8, 0x0c, 0x0c, 0xcc, 0x78, 0x00],
+        '6' => [0x38, 0x60, 0xc0, 0xf8, 0xcc, 0xcc, 0x78, 0x00],
+        '7' => [0xfc, 0xcc, 0x0c, 0x18, 0x30, 0x30, 0x30, 0x00],
+        '8' => [0x78, 0xcc, 0xcc, 0x78, 0xcc, 0xcc, 0x78, 0x00],
+        '9' => [0x78, 0xcc, 0xcc, 0x7c, 0x0c, 0x18, 0x70, 0x00],
+        ':' => [0x00, 0x30, 0x30, 0x00, 0x00, 0x30, 0x30, 0x00],
+        '/' => [0x06, 0x0c, 0x18, 0x30, 0x60, 0xc0, 0x80, 0x00],
+        _ => [0; 8],
+    }
+}
+
 fn draw_text(frame: &mut [u8], x: u32, y: u32, text: &str, scale: u32, color: u8) {
     let mut cursor = x;
     for character in text.chars() {
@@ -309,5 +652,43 @@ mod tests {
         assert_eq!(value["view"]["kind"], "title");
         assert_eq!(value["view"]["width"], 320);
         assert_eq!(value["view"]["height"], 200);
+    }
+
+    #[test]
+    fn supplied_monster_file_decodes_all_images() {
+        let data = fs::read("dos/MONPIX.DTA").unwrap();
+        let monsters = decode_monsters(&data).unwrap();
+
+        assert_eq!(monsters.len(), 76);
+        assert!(monsters.iter().all(|monster| monster.len() == 104 * 96));
+        assert!(monsters.iter().flatten().all(|pixel| *pixel < 4));
+    }
+
+    #[test]
+    fn malformed_monster_rle_is_rejected() {
+        assert!(decode_monster(&[0x7b]).is_err());
+    }
+
+    #[test]
+    fn browser_menu_only_opens_monsters() {
+        let mut browser = AssetBrowser::new(vec![vec![BLACK; 104 * 96]]);
+
+        browser.key_pressed(&Key::Named(NamedKey::Enter));
+        assert!(matches!(browser.page, BrowserPage::Menu));
+
+        browser.key_pressed(&Key::Named(NamedKey::ArrowDown));
+        browser.key_pressed(&Key::Named(NamedKey::Enter));
+        assert!(matches!(browser.page, BrowserPage::Monsters));
+    }
+
+    #[test]
+    fn monster_browser_wraps_in_both_directions() {
+        let mut browser = AssetBrowser::new(vec![vec![BLACK; 104 * 96]; 2]);
+        browser.page = BrowserPage::Monsters;
+
+        browser.key_pressed(&Key::Named(NamedKey::ArrowLeft));
+        assert_eq!(browser.monster, 1);
+        browser.key_pressed(&Key::Named(NamedKey::ArrowRight));
+        assert_eq!(browser.monster, 0);
     }
 }
