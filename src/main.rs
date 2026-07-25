@@ -1,11 +1,17 @@
-use std::{env, error::Error, sync::Arc};
+use std::{
+    env,
+    error::Error,
+    io::{self, IsTerminal, Read, Write},
+    sync::Arc,
+};
 
+use crossterm::{event, terminal};
 use pixels::{Pixels, SurfaceTexture};
 use serde::Serialize;
 use winit::{
     application::ApplicationHandler,
     dpi::{LogicalSize, PhysicalSize},
-    event::WindowEvent,
+    event::{ElementState, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
     window::{Window, WindowId},
 };
@@ -64,6 +70,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     if headless {
         println!("{}", serde_json::to_string_pretty(&view)?);
+        io::stdout().flush()?;
+        wait_for_headless_keypress()?;
         return Ok(());
     }
 
@@ -78,7 +86,7 @@ fn parse_args() -> Result<bool, String> {
             "--headless" => headless = true,
             "-h" | "--help" => {
                 println!(
-                    "Usage: mm1 [--headless]\n\n  --headless  Print the current player view as JSON and exit"
+                    "Usage: mm1 [--headless]\n\n  --headless  Print the current player view as JSON, then wait for a keypress"
                 );
                 std::process::exit(0);
             }
@@ -87,6 +95,31 @@ fn parse_args() -> Result<bool, String> {
     }
 
     Ok(headless)
+}
+
+fn wait_for_headless_keypress() -> io::Result<()> {
+    if !io::stdin().is_terminal() {
+        io::stdin().read_exact(&mut [0])?;
+        return Ok(());
+    }
+
+    terminal::enable_raw_mode()?;
+    let _raw_mode = RawModeGuard;
+    loop {
+        if let event::Event::Key(key) = event::read()?
+            && key.is_press()
+        {
+            return Ok(());
+        }
+    }
+}
+
+struct RawModeGuard;
+
+impl Drop for RawModeGuard {
+    fn drop(&mut self) {
+        let _ = terminal::disable_raw_mode();
+    }
 }
 
 fn run_windowed() -> Result<(), Box<dyn Error>> {
@@ -149,6 +182,9 @@ impl ApplicationHandler for GameWindow {
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                event_loop.exit();
+            }
             WindowEvent::Resized(PhysicalSize { width, height }) if width > 0 && height > 0 => {
                 if let Err(error) = pixels.resize_surface(width, height) {
                     eprintln!("could not resize the window surface: {error}");

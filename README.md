@@ -55,9 +55,8 @@ phase. The major binary containers are understood well enough to build lossless
 readers. A basic Rust executable presents a procedurally drawn, palette-indexed
 320x200 title screen in a 960x600 window using `pixels` and `winit`.
 
-The title screen is a scaffold, not decoded original artwork, and its displayed
-prompt is not interactive yet. The executable currently exits only when its
-window is closed.
+The title screen is a scaffold, not decoded original artwork. Pressing any key
+exits the executable; closing the graphical window exits it as well.
 
 Important remaining research includes:
 
@@ -88,8 +87,9 @@ cargo run
 ```
 
 The executable can report the current player view as versioned JSON without
-initializing a window or graphics device. This mode is intended for automated
-tests and non-graphical clients:
+initializing a window or graphics device. It writes and flushes the view, then
+waits for a keypress before exiting. This mode is intended for automated tests
+and non-graphical clients:
 
 ```sh
 cargo run -- --headless

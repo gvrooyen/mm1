@@ -5,6 +5,7 @@ edition = "2024"
 description = "A native reimplementation of Might and Magic Book One"
 
 [dependencies]
+crossterm = "0.29.0"
 pixels = "0.15.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
