@@ -25,8 +25,13 @@ original game assets.
 ## Repository contents
 
 ```text
-dos/                Original DOS game artifacts
-docs/REFERENCE.md   Reverse-engineered binary-format reference
+.agents/setup        Idempotent Debian/orb development setup
+AGENTS.md            Contributor and coding-agent guidance
+src/main.rs          Current game, renderer, and headless entry point
+dos/                 Original DOS game artifacts
+docs/REFERENCE.md    Reverse-engineered binary-format reference
+Cargo.toml           Rust package and dependencies
+rust-toolchain.toml  Pinned Rust toolchain
 ```
 
 The `dos/` directory includes the original executable, map overlays, maze data,
@@ -45,9 +50,14 @@ The detailed findings are recorded in
 
 ## Current status
 
-The project is currently in the reverse-engineering and specification phase.
-The major binary containers are understood well enough to build lossless readers,
-but no Rust game engine has been implemented yet.
+The project is currently in the reverse-engineering and early implementation
+phase. The major binary containers are understood well enough to build lossless
+readers. A basic Rust executable presents a procedurally drawn, palette-indexed
+320x200 title screen in a 960x600 window using `pixels` and `winit`.
+
+The title screen is a scaffold, not decoded original artwork, and its displayed
+prompt is not interactive yet. The executable currently exits only when its
+window is closed.
 
 Important remaining research includes:
 
@@ -61,6 +71,53 @@ Important remaining research includes:
 
 Implementation should follow the documented formats and preserve unresolved
 bytes losslessly until their meanings are established.
+
+## Running the scaffold
+
+On Debian or in an Amp orb, install the pinned Rust toolchain and native window
+system dependencies with the idempotent setup script:
+
+```sh
+.agents/setup
+```
+
+Run the graphical title screen:
+
+```sh
+cargo run
+```
+
+The executable can report the current player view as versioned JSON without
+initializing a window or graphics device. This mode is intended for automated
+tests and non-graphical clients:
+
+```sh
+cargo run -- --headless
+```
+
+Current output:
+
+```json
+{
+  "schema_version": 1,
+  "view": {
+    "kind": "title",
+    "width": 320,
+    "height": 200,
+    "title": "Might and Magic",
+    "subtitle": "Book One: Secret of the Inner Sanctum",
+    "prompt": "Press any key"
+  }
+}
+```
+
+Run the development checks with:
+
+```sh
+cargo fmt --check
+cargo check --locked
+cargo test --locked
+```
 
 ## Intended architecture
 
@@ -77,7 +134,11 @@ Rust saves   ──► party, position, map state, encounters, effects, and RNG 
 
 The native engine should preserve the behavior encoded by the original overlay
 machine code, but it should express that behavior through normal Rust data and
-functions rather than emulating fixed addresses or the 8086 overlay ABI.
+functions rather than emulating fixed addresses or the 8086 overlay ABI. The
+renderer currently keeps a four-color indexed 320x200 framebuffer and converts
+it to RGBA only when copying it to the `pixels` surface. Game state and player
+view descriptions should remain independent of window creation so the same
+state is available through `--headless`.
 
 ## Legal note
 
