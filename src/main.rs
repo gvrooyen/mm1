@@ -230,6 +230,14 @@ impl AssetBrowser {
     }
 
     fn key_pressed(&mut self, key: &Key) {
+        if key == &Key::Named(NamedKey::Escape) {
+            if matches!(self.page, BrowserPage::Monsters) {
+                self.page = BrowserPage::Menu;
+                self.redraw_framebuffer();
+            }
+            return;
+        }
+
         match self.page {
             BrowserPage::Menu => match key {
                 Key::Named(NamedKey::ArrowUp) => {
@@ -261,6 +269,12 @@ impl AssetBrowser {
         }
         self.redraw_framebuffer();
     }
+}
+
+fn is_quit_shortcut(key: &Key, modifiers: ModifiersState) -> bool {
+    modifiers.control_key()
+        && matches!(key, Key::Character(character) if
+            character.eq_ignore_ascii_case("c") || character.eq_ignore_ascii_case("q"))
 }
 
 impl ApplicationHandler for AssetBrowser {
@@ -298,9 +312,7 @@ impl ApplicationHandler for AssetBrowser {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                let ctrl_c = self.modifiers.control_key()
-                    && matches!(&event.logical_key, Key::Character(character) if character.eq_ignore_ascii_case("c"));
-                if event.logical_key == Key::Named(NamedKey::Escape) || ctrl_c {
+                if is_quit_shortcut(&event.logical_key, self.modifiers) {
                     event_loop.exit();
                 } else {
                     self.key_pressed(&event.logical_key);
@@ -724,6 +736,31 @@ mod tests {
         browser.key_pressed(&Key::Named(NamedKey::ArrowDown));
         browser.key_pressed(&Key::Named(NamedKey::Enter));
         assert!(matches!(browser.page, BrowserPage::Monsters));
+    }
+
+    #[test]
+    fn escape_returns_to_the_previous_browser_menu() {
+        let mut browser = AssetBrowser::new(vec![vec![BLACK; 104 * 96]]);
+        browser.page = BrowserPage::Monsters;
+
+        browser.key_pressed(&Key::Named(NamedKey::Escape));
+        assert!(matches!(browser.page, BrowserPage::Menu));
+
+        browser.key_pressed(&Key::Named(NamedKey::Escape));
+        assert!(matches!(browser.page, BrowserPage::Menu));
+    }
+
+    #[test]
+    fn ctrl_c_and_ctrl_q_are_quit_shortcuts() {
+        let control = ModifiersState::CONTROL;
+
+        assert!(is_quit_shortcut(&Key::Character("c".into()), control));
+        assert!(is_quit_shortcut(&Key::Character("Q".into()), control));
+        assert!(!is_quit_shortcut(
+            &Key::Character("q".into()),
+            ModifiersState::empty()
+        ));
+        assert!(!is_quit_shortcut(&Key::Named(NamedKey::Escape), control));
     }
 
     #[test]
