@@ -25,7 +25,7 @@ const HEIGHT: u32 = 200;
 const SCALE: u32 = 3;
 const TITLE_MUSIC_PATH: &str = "assets/intro.mp3";
 const TITLE_PICKUP_DURATION: Duration = Duration::from_micros(219_702);
-const TITLE_RING_INTERVAL: Duration = Duration::from_millis(35);
+const TITLE_RING_INTERVAL: Duration = Duration::from_millis(100);
 const TITLE_RING_COUNT: u32 = 20;
 
 const BLACK: u8 = 0;
