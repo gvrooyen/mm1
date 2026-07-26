@@ -37,6 +37,7 @@ const LAST_SCENE: usize = 9;
 
 const BLACK: u8 = 0;
 const CYAN: u8 = 1;
+const MAGENTA: u8 = 2;
 const WHITE: u8 = 3;
 
 const PALETTE: [[u8; 4]; 4] = [
@@ -169,6 +170,8 @@ fn run_asset_browser() -> Result<(), Box<dyn Error>> {
     let monsters = decode_monsters(&monster_data)?;
     let wall_data = fs::read("dos/WALLPIX.DTA")?;
     let walls = decode_wall_sets(&wall_data)?;
+    let map_data = fs::read("dos/MAZEDATA.DTA")?;
+    let maps = decode_maps(&map_data)?;
     let roster_data = fs::read("dos/ROSTER.DTA")?;
     let characters = decode_roster(&roster_data)?
         .into_iter()
@@ -176,7 +179,7 @@ fn run_asset_browser() -> Result<(), Box<dyn Error>> {
         .map(|entry| entry.character)
         .collect();
     let event_loop = EventLoop::new()?;
-    let mut app = AssetBrowser::new(images, monsters, walls, characters);
+    let mut app = AssetBrowser::new(images, monsters, walls, characters, maps);
     event_loop.run_app(&mut app)?;
     Ok(())
 }
@@ -185,6 +188,7 @@ const BROWSER_ITEMS: [&str; 5] = ["MAPS", "MONSTERS", "WALLS", "IMAGES", "ROSTER
 
 enum BrowserPage {
     Menu,
+    Maps,
     Monsters,
     Walls,
     Images,
@@ -195,6 +199,71 @@ struct WallSet {
     components: Vec<Vec<u8>>,
 }
 
+#[derive(Clone)]
+struct Map {
+    walls: [u8; 256],
+    #[allow(dead_code)] // Retained losslessly for future map-property views.
+    properties: [u8; 256],
+}
+
+const MAP_NAMES: [&str; 55] = [
+    "SORPIGAL.OVR",
+    "PORTSMIT.OVR",
+    "ALGARY.OVR",
+    "DUSK.OVR",
+    "ERLIQUIN.OVR",
+    "CAVE1.OVR",
+    "CAVE2.OVR",
+    "CAVE3.OVR",
+    "CAVE4.OVR",
+    "CAVE5.OVR",
+    "CAVE6.OVR",
+    "CAVE7.OVR",
+    "CAVE8.OVR",
+    "CAVE9.OVR",
+    "AREAA1.OVR",
+    "AREAA2.OVR",
+    "AREAA3.OVR",
+    "AREAA4.OVR",
+    "AREAB1.OVR",
+    "AREAB2.OVR",
+    "AREAB3.OVR",
+    "AREAB4.OVR",
+    "AREAC1.OVR",
+    "AREAC2.OVR",
+    "AREAC3.OVR",
+    "AREAC4.OVR",
+    "AREAD1.OVR",
+    "AREAD2.OVR",
+    "AREAD3.OVR",
+    "AREAD4.OVR",
+    "AREAE1.OVR",
+    "AREAE2.OVR",
+    "AREAE3.OVR",
+    "AREAE4.OVR",
+    "DOOM.OVR",
+    "BLACKRN.OVR",
+    "BLACKRS.OVR",
+    "QVL1.OVR",
+    "QVL2.OVR",
+    "RWL1.OVR",
+    "RWL2.OVR",
+    "ENF1.OVR",
+    "ENF2.OVR",
+    "WHITEW.OVR",
+    "DRAGAD.OVR",
+    "UDRAG1.OVR",
+    "UDRAG2.OVR",
+    "UDRAG3.OVR",
+    "DEMON.OVR",
+    "ALAMAR.OVR",
+    "PP1.OVR",
+    "PP2.OVR",
+    "PP3.OVR",
+    "PP4.OVR",
+    "ASTRAL.OVR",
+];
+
 struct AssetBrowser {
     window: Option<Arc<Window>>,
     pixels: Option<Pixels<'static>>,
@@ -203,12 +272,14 @@ struct AssetBrowser {
     monsters: Vec<Vec<u8>>,
     walls: Vec<WallSet>,
     characters: Vec<Character>,
+    maps: Vec<Map>,
     page: BrowserPage,
     selection: usize,
     image: usize,
     monster: usize,
     wall: usize,
     character: usize,
+    map: usize,
     modifiers: ModifiersState,
 }
 
@@ -218,6 +289,7 @@ impl AssetBrowser {
         monsters: Vec<Vec<u8>>,
         walls: Vec<WallSet>,
         characters: Vec<Character>,
+        maps: Vec<Map>,
     ) -> Self {
         let mut browser = Self {
             window: None,
@@ -227,12 +299,14 @@ impl AssetBrowser {
             monsters,
             walls,
             characters,
+            maps,
             page: BrowserPage::Menu,
             selection: 0,
             image: 0,
             monster: 0,
             wall: 0,
             character: 0,
+            map: 0,
             modifiers: ModifiersState::empty(),
         };
         browser.redraw_framebuffer();
@@ -254,6 +328,7 @@ impl AssetBrowser {
                     }
                 }
             }
+            BrowserPage::Maps => self.draw_map(),
             BrowserPage::Monsters => {
                 let image = &self.monsters[self.monster];
                 for y in 0..96usize {
@@ -297,6 +372,7 @@ impl AssetBrowser {
             if matches!(
                 self.page,
                 BrowserPage::Monsters
+                    | BrowserPage::Maps
                     | BrowserPage::Walls
                     | BrowserPage::Images
                     | BrowserPage::Roster
@@ -331,6 +407,18 @@ impl AssetBrowser {
                     if self.selection == 4 && !self.characters.is_empty() =>
                 {
                     self.page = BrowserPage::Roster;
+                }
+                Key::Named(NamedKey::Enter) if self.selection == 0 => {
+                    self.page = BrowserPage::Maps;
+                }
+                _ => return,
+            },
+            BrowserPage::Maps => match key {
+                Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown) => {
+                    self.map = self.map.checked_sub(1).unwrap_or(self.maps.len() - 1);
+                }
+                Key::Named(NamedKey::ArrowRight | NamedKey::ArrowUp) => {
+                    self.map = (self.map + 1) % self.maps.len();
                 }
                 _ => return,
             },
@@ -461,6 +549,69 @@ impl AssetBrowser {
             "ARROWS: PREVIOUS / NEXT",
             WHITE,
         );
+    }
+
+    fn draw_map(&mut self) {
+        let map = &self.maps[self.map];
+        let title = format!("{}  {:02} / 55", MAP_NAMES[self.map], self.map + 1);
+        draw_dos_text(&mut self.framebuffer, 48, 10, &title, WHITE);
+        draw_map(&mut self.framebuffer, map, 96, 28);
+        draw_dos_text(&mut self.framebuffer, 36, 164, "WALL", WHITE);
+        draw_dos_text(&mut self.framebuffer, 92, 164, "DOOR", CYAN);
+        draw_dos_text(&mut self.framebuffer, 148, 164, "SPECIAL", MAGENTA);
+        draw_dos_text(
+            &mut self.framebuffer,
+            60,
+            184,
+            "ARROWS: PREVIOUS / NEXT",
+            CYAN,
+        );
+    }
+}
+
+fn decode_maps(data: &[u8]) -> Result<Vec<Map>, String> {
+    if data.len() != 55 * 512 {
+        return Err(format!(
+            "MAZEDATA.DTA must contain 55 512-byte records, found {} bytes",
+            data.len()
+        ));
+    }
+    Ok(data
+        .chunks_exact(512)
+        .map(|record| Map {
+            walls: record[..256].try_into().unwrap(),
+            properties: record[256..].try_into().unwrap(),
+        })
+        .collect())
+}
+
+fn draw_map(frame: &mut [u8], map: &Map, origin_x: u32, origin_y: u32) {
+    const CELL: u32 = 8;
+    for display_y in 0..16 {
+        let source_y = 15 - display_y;
+        for x in 0..16 {
+            let value = map.walls[source_y * 16 + x];
+            let px = origin_x + x as u32 * CELL;
+            let py = origin_y + display_y as u32 * CELL;
+            let color = |shift: u32| match (value >> shift) & 3u8 {
+                1 => WHITE,
+                2 => CYAN,
+                3 => MAGENTA,
+                _ => BLACK,
+            };
+            if color(6) != 0 {
+                fill_rect(frame, px + 1, py + 1, 6, 1, color(6));
+            }
+            if color(4) != 0 {
+                fill_rect(frame, px + 6, py + 1, 1, 6, color(4));
+            }
+            if color(2) != 0 {
+                fill_rect(frame, px + 1, py + 6, 6, 1, color(2));
+            }
+            if color(0) != 0 {
+                fill_rect(frame, px + 1, py + 1, 1, 6, color(0));
+            }
+        }
     }
 }
 
@@ -1190,9 +1341,6 @@ mod tests {
     fn browser_menu_opens_monsters() {
         let mut browser = test_browser();
 
-        browser.key_pressed(&Key::Named(NamedKey::Enter));
-        assert!(matches!(browser.page, BrowserPage::Menu));
-
         browser.key_pressed(&Key::Named(NamedKey::ArrowDown));
         browser.key_pressed(&Key::Named(NamedKey::Enter));
         assert!(matches!(browser.page, BrowserPage::Monsters));
@@ -1230,6 +1378,7 @@ mod tests {
             vec![vec![BLACK; 104 * 96]; 2],
             vec![blank_wall_set()],
             test_characters(),
+            blank_maps(),
         );
         browser.page = BrowserPage::Monsters;
 
@@ -1246,6 +1395,7 @@ mod tests {
             vec![vec![BLACK; 104 * 96]; 3],
             vec![blank_wall_set()],
             test_characters(),
+            blank_maps(),
         );
         browser.page = BrowserPage::Monsters;
 
@@ -1264,6 +1414,7 @@ mod tests {
             vec![vec![BLACK; 104 * 96]],
             vec![blank_wall_set(), blank_wall_set()],
             test_characters(),
+            blank_maps(),
         );
         browser.selection = 2;
         browser.key_pressed(&Key::Named(NamedKey::Enter));
@@ -1282,6 +1433,7 @@ mod tests {
             vec![vec![BLACK; 104 * 96]],
             vec![blank_wall_set(), blank_wall_set(), blank_wall_set()],
             test_characters(),
+            blank_maps(),
         );
         browser.selection = 2;
         browser.key_pressed(&Key::Named(NamedKey::Enter));
@@ -1302,6 +1454,7 @@ mod tests {
             vec![vec![BLACK; 104 * 96]],
             vec![blank_wall_set()],
             test_characters(),
+            blank_maps(),
         );
         browser.selection = 3;
         browser.key_pressed(&Key::Named(NamedKey::Enter));
@@ -1334,7 +1487,47 @@ mod tests {
             vec![vec![BLACK; 104 * 96]],
             vec![blank_wall_set()],
             test_characters(),
+            blank_maps(),
         )
+    }
+
+    #[test]
+    fn supplied_map_file_decodes_losslessly() {
+        let data = fs::read("dos/MAZEDATA.DTA").unwrap();
+        let maps = decode_maps(&data).unwrap();
+
+        assert_eq!(maps.len(), 55);
+        assert_eq!(&maps[0].walls, &data[..256]);
+        assert_eq!(&maps[54].properties, &data[54 * 512 + 256..]);
+        assert!(decode_maps(&data[..data.len() - 1]).is_err());
+    }
+
+    #[test]
+    fn map_renderer_puts_game_north_at_the_top_and_draws_each_edge() {
+        let mut map = blank_maps().remove(0);
+        map.walls[15 * 16] = 0b01_10_11_01;
+        let mut frame = vec![BLACK; (WIDTH * HEIGHT) as usize];
+        draw_map(&mut frame, &map, 0, 0);
+
+        assert_eq!(frame[1 * WIDTH as usize + 3], WHITE);
+        assert_eq!(frame[3 * WIDTH as usize + 6], CYAN);
+        assert_eq!(frame[6 * WIDTH as usize + 3], MAGENTA);
+        assert_eq!(frame[3 * WIDTH as usize + 1], WHITE);
+        assert_eq!(frame[121 * WIDTH as usize + 3], BLACK);
+    }
+
+    #[test]
+    fn map_browser_opens_and_wraps_like_other_collections() {
+        let mut browser = test_browser();
+        browser.key_pressed(&Key::Named(NamedKey::Enter));
+        assert!(matches!(browser.page, BrowserPage::Maps));
+
+        browser.key_pressed(&Key::Named(NamedKey::ArrowLeft));
+        assert_eq!(browser.map, 54);
+        browser.key_pressed(&Key::Named(NamedKey::ArrowUp));
+        assert_eq!(browser.map, 0);
+        browser.key_pressed(&Key::Named(NamedKey::Escape));
+        assert!(matches!(browser.page, BrowserPage::Menu));
     }
 
     fn test_characters() -> Vec<Character> {
@@ -1357,5 +1550,15 @@ mod tests {
                 .map(|&(width, height)| vec![BLACK; width * height])
                 .collect(),
         }
+    }
+
+    fn blank_maps() -> Vec<Map> {
+        vec![
+            Map {
+                walls: [0; 256],
+                properties: [0; 256],
+            };
+            55
+        ]
     }
 }
