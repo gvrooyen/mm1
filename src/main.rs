@@ -1,18 +1,17 @@
 mod character;
+mod game;
 
 use std::{
     env,
     error::Error,
     fs::{self, File},
-    io::{self, IsTerminal, Read, Write},
+    io::{self, Write},
     sync::Arc,
     time::{Duration, Instant},
 };
 
-use crossterm::{event, terminal};
 use pixels::{Pixels, SurfaceTexture};
 use rodio::{Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, Source};
-use serde::Serialize;
 use winit::{
     application::ApplicationHandler,
     dpi::{LogicalSize, PhysicalSize},
@@ -47,46 +46,16 @@ const PALETTE: [[u8; 4]; 4] = [
     [0xff, 0xff, 0xff, 0xff],
 ];
 
-#[derive(Serialize)]
-struct PlayerView<'a> {
-    schema_version: u32,
-    view: View<'a>,
-}
-
-#[derive(Serialize)]
-struct View<'a> {
-    kind: &'a str,
-    width: u32,
-    height: u32,
-    title: &'a str,
-    subtitle: &'a str,
-    prompt: &'a str,
-}
-
-impl PlayerView<'static> {
-    fn title_screen() -> Self {
-        Self {
-            schema_version: 1,
-            view: View {
-                kind: "title",
-                width: WIDTH,
-                height: HEIGHT,
-                title: "Might and Magic",
-                subtitle: "Book One: Secret of the Inner Sanctum",
-                prompt: "Press any key",
-            },
-        }
-    }
-}
-
 fn main() -> Result<(), Box<dyn Error>> {
     let args = parse_args()?;
-    let view = PlayerView::title_screen();
 
     if args.headless {
-        println!("{}", serde_json::to_string_pretty(&view)?);
+        let mut game = game::Game::load()?;
+        for command in &args.commands {
+            game.command(command);
+        }
+        println!("{}", serde_json::to_string_pretty(&game.view())?);
         io::stdout().flush()?;
-        wait_for_headless_keypress()?;
         return Ok(());
     }
 
@@ -101,18 +70,29 @@ fn main() -> Result<(), Box<dyn Error>> {
 struct Args {
     headless: bool,
     browse: bool,
+    commands: Vec<String>,
 }
 
 fn parse_args() -> Result<Args, String> {
     let mut args = Args::default();
 
-    for arg in env::args().skip(1) {
+    let mut input = env::args().skip(1);
+    while let Some(arg) = input.next() {
         match arg.as_str() {
             "--headless" => args.headless = true,
             "--browse" => args.browse = true,
+            "--commands" => {
+                let value = input.next().ok_or("--commands requires a value")?;
+                args.commands.extend(
+                    value
+                        .split(',')
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_owned),
+                );
+            }
             "-h" | "--help" => {
                 println!(
-                    "Usage: mm1 [--headless | --browse]\n\n  --headless  Print the current player view as JSON, then wait for a keypress\n  --browse    Browse original game assets"
+                    "Usage: mm1 [--headless [--commands LIST] | --browse]\n\n  --headless  Print the final player view as JSON\n  --commands  Repeatable comma-separated session commands\n  --browse    Browse original game assets"
                 );
                 std::process::exit(0);
             }
@@ -123,33 +103,11 @@ fn parse_args() -> Result<Args, String> {
     if args.headless && args.browse {
         return Err("--headless and --browse cannot be used together".into());
     }
+    if !args.headless && !args.commands.is_empty() {
+        return Err("--commands requires --headless".into());
+    }
 
     Ok(args)
-}
-
-fn wait_for_headless_keypress() -> io::Result<()> {
-    if !io::stdin().is_terminal() {
-        io::stdin().read_exact(&mut [0])?;
-        return Ok(());
-    }
-
-    terminal::enable_raw_mode()?;
-    let _raw_mode = RawModeGuard;
-    loop {
-        if let event::Event::Key(key) = event::read()?
-            && key.is_press()
-        {
-            return Ok(());
-        }
-    }
-}
-
-struct RawModeGuard;
-
-impl Drop for RawModeGuard {
-    fn drop(&mut self) {
-        let _ = terminal::disable_raw_mode();
-    }
 }
 
 fn run_windowed() -> Result<(), Box<dyn Error>> {
@@ -915,6 +873,10 @@ struct GameWindow {
     animation: TitleAnimation,
     next_update: Instant,
     _title_music: Option<TitleMusic>,
+    game: game::Game,
+    game_framebuffer: Vec<u8>,
+    modifiers: ModifiersState,
+    blacksmith_number_action: &'static str,
 }
 
 impl GameWindow {
@@ -925,15 +887,112 @@ impl GameWindow {
             animation,
             next_update: Instant::now() + TITLE_RING_INTERVAL,
             _title_music: title_music,
+            game: game::Game::load().expect("could not load game data"),
+            game_framebuffer: vec![BLACK; (WIDTH * HEIGHT) as usize],
+            modifiers: ModifiersState::empty(),
+            blacksmith_number_action: "buy:",
         }
     }
 
     fn key_pressed(&mut self, key: &Key) -> bool {
+        if self.game.screen != game::Screen::Title {
+            if self.game.screen != game::Screen::Blacksmith {
+                self.blacksmith_number_action = "buy:";
+            }
+            let command = match key {
+                Key::Named(NamedKey::Escape) => Some("escape"),
+                Key::Named(NamedKey::Enter | NamedKey::Space) => Some(match self.game.screen {
+                    game::Screen::Encounter => "fight",
+                    game::Screen::Treasure => "open",
+                    _ => "confirm",
+                }),
+                Key::Named(NamedKey::ArrowUp) => Some("forward"),
+                Key::Named(NamedKey::ArrowDown) => Some("back"),
+                Key::Named(NamedKey::ArrowLeft) => Some("left"),
+                Key::Named(NamedKey::ArrowRight) => Some("right"),
+                Key::Character(c) if c.len() == 1 && c.as_bytes()[0].is_ascii_digit() => {
+                    let command = match self.game.screen {
+                        game::Screen::Inn => "toggle:",
+                        game::Screen::Blacksmith => self.blacksmith_number_action,
+                        game::Screen::Combat => "attack:",
+                        _ => "choose:",
+                    };
+                    self.game.command(&format!("{command}{c}"));
+                    self.blacksmith_number_action = "buy:";
+                    None
+                }
+                Key::Character(c) => match c.to_ascii_lowercase().as_str() {
+                    "f" if matches!(
+                        self.game.screen,
+                        game::Screen::Encounter | game::Screen::Combat
+                    ) =>
+                    {
+                        Some("flee")
+                    }
+                    "f" => Some("food"),
+                    "c" if self.game.screen == game::Screen::Combat => Some("cast"),
+                    "d" if self.game.screen == game::Screen::Combat => Some("defend"),
+                    "a" if self.game.screen == game::Screen::Blacksmith => {
+                        self.blacksmith_number_action = "buy:";
+                        Some("armor")
+                    }
+                    "c" if self.game.screen == game::Screen::Blacksmith => {
+                        self.blacksmith_number_action = "choose:";
+                        None
+                    }
+                    "s" if self.game.screen == game::Screen::Blacksmith => {
+                        self.blacksmith_number_action = "sell:";
+                        None
+                    }
+                    "o" if self.game.screen == game::Screen::Treasure => Some("open"),
+                    "l" if self.game.screen == game::Screen::Treasure => Some("leave"),
+                    "d" => Some("drink"),
+                    "t" if self.game.screen == game::Screen::Tavern => Some("tip"),
+                    "t" => Some("train"),
+                    "u" if self.game.screen == game::Screen::Town => Some("unlock"),
+                    "u" => Some("rumor"),
+                    "g" => Some("gather"),
+                    "o" => Some("donate"),
+                    "h" => Some("restore"),
+                    "a" if self.game.screen == game::Screen::Temple => Some("realign"),
+                    "w" => {
+                        self.blacksmith_number_action = "buy:";
+                        Some("weapons")
+                    }
+                    "m" => {
+                        self.blacksmith_number_action = "buy:";
+                        Some("misc")
+                    }
+                    "b" => Some("bash"),
+                    "y" => Some("yes"),
+                    "n" => Some("no"),
+                    _ => None,
+                },
+                _ => None,
+            };
+            if let Some(command) = command {
+                self.game.command(command);
+            }
+            self.redraw_game();
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+            return false;
+        }
         if key == &Key::Named(NamedKey::Escape) {
             return true;
         }
 
-        if key == &Key::Named(NamedKey::Space) {
+        if key == &Key::Named(NamedKey::Space) || key == &Key::Named(NamedKey::Enter) {
+            self.game.command("start");
+            self.redraw_game();
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+            return false;
+        } else if key == &Key::Character("q".into()) {
+            return true;
+        } else if key == &Key::Named(NamedKey::Tab) {
             if self.animation.in_slideshow() {
                 self.animation.advance_slideshow();
             } else {
@@ -951,6 +1010,109 @@ impl GameWindow {
         }
 
         false
+    }
+
+    fn redraw_game(&mut self) {
+        self.game_framebuffer.fill(BLACK);
+        let view = self.game.view();
+        draw_dos_text(&mut self.game_framebuffer, 8, 8, view.title, WHITE);
+        let mut y = 22;
+        if let (Some((x, map_y)), Some(facing)) = (view.position, view.facing) {
+            draw_dos_text(
+                &mut self.game_framebuffer,
+                8,
+                y,
+                &format!("POSITION {x},{map_y}  FACING {facing:?}"),
+                WHITE,
+            );
+            y += 12;
+        }
+        if !view.exits.is_empty() {
+            let exits = view
+                .exits
+                .iter()
+                .map(|exit| {
+                    format!(
+                        "{:?}:{}{}",
+                        exit.direction,
+                        exit.wall_type,
+                        if exit.passable { "+" } else { "-" }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            draw_dos_text(&mut self.game_framebuffer, 8, y, &exits, CYAN);
+            y += 12;
+        }
+        if let Some(combat) = &view.combat {
+            draw_dos_text(
+                &mut self.game_framebuffer,
+                8,
+                y,
+                &format!(
+                    "ROUND {}  ACTIVE PARTY {}",
+                    combat.round,
+                    combat.active_party_member.unwrap_or(0)
+                ),
+                WHITE,
+            );
+            y += 11;
+            for enemy in combat.enemies.iter().take(5) {
+                draw_dos_text(
+                    &mut self.game_framebuffer,
+                    8,
+                    y,
+                    &format!(
+                        "{} {} HP {}/{}",
+                        enemy.slot, enemy.name, enemy.hp, enemy.max_hp
+                    ),
+                    CYAN,
+                );
+                y += 10;
+            }
+        }
+        let option_limit = if self.game.screen == game::Screen::Blacksmith {
+            12
+        } else {
+            7
+        };
+        for option in view.options.iter().take(option_limit) {
+            draw_dos_text(&mut self.game_framebuffer, 8, y, option, CYAN);
+            y += 11;
+        }
+        for member in view.party.iter().take(6) {
+            if self.game.screen == game::Screen::Blacksmith && !member.is_current {
+                continue;
+            }
+            draw_dos_text(
+                &mut self.game_framebuffer,
+                8,
+                y,
+                &format!(
+                    "{}{} L{} HP{} XP{} G{} GM{} C{:02X}",
+                    if member.is_current { "*" } else { " " },
+                    member.name,
+                    member.level,
+                    member.hp,
+                    member.experience,
+                    member.gold,
+                    member.gems,
+                    member.condition
+                ),
+                MAGENTA,
+            );
+            y += 10;
+        }
+        for line in view.message.as_bytes().chunks(39) {
+            draw_dos_text(
+                &mut self.game_framebuffer,
+                8,
+                y.min(184),
+                &String::from_utf8_lossy(line),
+                WHITE,
+            );
+            y += 10;
+        }
     }
 }
 
@@ -993,8 +1155,11 @@ impl ApplicationHandler for GameWindow {
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::ModifiersChanged(modifiers) => self.modifiers = modifiers.state(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                if self.key_pressed(&event.logical_key) {
+                if is_quit_shortcut(&event.logical_key, self.modifiers)
+                    || self.key_pressed(&event.logical_key)
+                {
                     event_loop.exit();
                 }
             }
@@ -1005,7 +1170,12 @@ impl ApplicationHandler for GameWindow {
                 }
             }
             WindowEvent::RedrawRequested => {
-                copy_to_rgba(self.animation.framebuffer(), pixels.frame_mut());
+                let frame = if self.game.screen == game::Screen::Title {
+                    self.animation.framebuffer()
+                } else {
+                    &self.game_framebuffer
+                };
+                copy_to_rgba(frame, pixels.frame_mut());
                 if let Err(error) = pixels.render() {
                     eprintln!("could not render the title screen: {error}");
                     event_loop.exit();
@@ -1152,6 +1322,9 @@ fn copy_to_rgba(indexed: &[u8], rgba: &mut [u8]) {
 }
 
 fn fill_rect(frame: &mut [u8], x: u32, y: u32, width: u32, height: u32, color: u8) {
+    if x >= WIDTH || y >= HEIGHT {
+        return;
+    }
     for row in y..(y + height).min(HEIGHT) {
         let start = (row * WIDTH + x) as usize;
         let end = (row * WIDTH + (x + width).min(WIDTH)) as usize;
@@ -1180,6 +1353,7 @@ fn draw_dos_text(frame: &mut [u8], x: u32, y: u32, text: &str, color: u8) {
 
 // The original DOS presentation uses the familiar 8x8 IBM PC character-cell style.
 fn dos_glyph(character: char) -> [u8; 8] {
+    let character = character.to_ascii_uppercase();
     match character {
         'A' => [0x30, 0x78, 0xcc, 0xcc, 0xfc, 0xcc, 0xcc, 0x00],
         'B' => [0xfc, 0x66, 0x66, 0x7c, 0x66, 0x66, 0xfc, 0x00],
@@ -1271,21 +1445,17 @@ mod tests {
         let mut window = GameWindow::new(TitleAnimation::load().unwrap(), None);
 
         assert!(!window.key_pressed(&Key::Named(NamedKey::Space)));
-        assert_eq!(window.animation.scene, Some(FIRST_SCENE));
-        assert!(!window.key_pressed(&Key::Named(NamedKey::Space)));
-        assert_eq!(window.animation.scene, Some(FIRST_SCENE + 1));
-        assert!(!window.key_pressed(&Key::Character("x".into())));
-        assert_eq!(window.animation.scene, Some(FIRST_SCENE + 1));
+        assert_eq!(window.game.screen, game::Screen::Inn);
+        let mut window = GameWindow::new(TitleAnimation::load().unwrap(), None);
         assert!(window.key_pressed(&Key::Named(NamedKey::Escape)));
     }
 
     #[test]
     fn title_view_serializes_as_versioned_json() {
-        let value = serde_json::to_value(PlayerView::title_screen()).unwrap();
-        assert_eq!(value["schema_version"], 1);
-        assert_eq!(value["view"]["kind"], "title");
-        assert_eq!(value["view"]["width"], 320);
-        assert_eq!(value["view"]["height"], 200);
+        let game = game::Game::load().unwrap();
+        let value = serde_json::to_value(game.view()).unwrap();
+        assert_eq!(value["schema_version"], 2);
+        assert_eq!(value["kind"], "title");
     }
 
     #[test]

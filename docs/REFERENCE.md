@@ -50,6 +50,24 @@ than game input.
 
 # World and map data
 
+## Native Sorpigal combat boundary
+
+`MM.EXE` contains 196 contiguous 32-byte monster records at file offset
+`0x1B3F2`. Verified fields used by the native combat slice are the 15-byte
+space-padded name, HP at `+17`, armor class at `+18`, maximum damage at `+19`,
+attack count at `+20`, speed at `+21`, little-endian experience at `+22`, and
+loot flags at `+24`. This layout and the Sorpigal initial encounter parameters
+(level floor 1, level cap 1, five-monster cap) are corroborated by ScummVM's
+MM1 `data/monsters.*`, `game/encounter.cpp`, and `maps/map00.cpp`.
+
+The current native loop is intentionally approximate beyond those decoded
+inputs. It selects from the correct first 16 (level-one) monster records and
+uses deterministic simplified attack, initiative, flee, unconsciousness, and
+treasure rules. Experience is divided among active characters and loot flag
+gold bands follow the corroborating implementation. Special attacks, items,
+spells, gems, containers/traps, surprise, negotiation, and exact DOS combat
+timing/formulas remain unresolved in this implementation.
+
 ## Map order
 
 `MM.EXE` contains a table of 55 overlay base names. `MAZEDATA.DTA` contains
@@ -202,6 +220,12 @@ tests `0x20` for darkness, and normal map processing tests `0x80` before calling
 the overlay event dispatcher. Bits 1 and 3 must remain raw until their
 map-specific consumers have been catalogued.
 
+ScummVM corroborates an important movement distinction in the original engine:
+forward movement through a drawn wall edge is allowed when that direction's
+`0x55` state bit is clear, which represents walk-through hidden passages.
+Backward movement is blocked by any drawn wall edge as well as by state bits.
+The native movement loop preserves this directional difference.
+
 ### Mutability
 
 `MM.EXE` opens and reads `MAZEDATA.DTA`; no maze writer exists. The on-disk file
@@ -215,6 +239,22 @@ event belong in game state rather than being written into this file.
 The `.OVR` files are raw loadable 8086 modules containing map-specific code and
 initialized data. They are neither compressed map files nor standalone DOS MZ
 executables.
+
+### Verified Sorpigal special table
+
+Using `data = file[14 + code_size..]`, the 24 packed coordinates at
+`data[51..75]` and direction masks at `data[75..99]` decode as follows. A packed
+coordinate is `(value % 16, value / 16)`.
+
+| Index | Meaning | X,Y | Mask |
+| ---: | --- | --- | ---: |
+| 0–7 | inn, direction sign, blacksmith, food, outside, tavern, temple, training | (8,3), (8,5), (6,5), (10,5), (12,0), (11,14), (4,1), (13,11) | 0C, 3F, 03, 30, 0C, 30, C0, C0 |
+| 8–9 | leprechaun, stairs down | (11,3), (14,0) | 03, 03 |
+| 10–17 | statues | (2,4), (0,9), (10,12), (14,14), (7,1), (0,4), (0,2), (0,6) | 30, 0C, 30, 03, C0, 03, 03, 03 |
+| 18–21 | temple, jail, tavern, training signs | (4,0), (6,10), (9,14), (13,10) | C0, C0, 30, C0 |
+| 22–23 | encounter tuning, trapdoor | (5,15), (5,8) | FF, 0F |
+
+The direction masks are north `C0`, east `30`, south `0C`, and west `03`.
 
 Evidence includes:
 
@@ -885,6 +925,31 @@ checksum, encryption, or obfuscation.
 The roster is not a complete arbitrary-position game snapshot. It stores
 character progression and quest-related state, but not all runtime state needed
 to resume in the middle of a map or encounter.
+
+## Verified `MM.EXE` item table
+
+`MM.EXE` contains 255 consecutive 24-byte item records beginning at raw file
+offset `0x19B2A`. Item IDs are one-based, so item `n` starts at
+`0x19B2A + (n - 1) * 24`.
+
+| Offset | Size | Meaning |
+| ---: | ---: | --- |
+| `0x00` | 14 | Space-padded ASCII name |
+| `0x0E` | 1 | Class/alignment disablement flags |
+| `0x0F` | 1 | Constant bonus target or equip discriminator |
+| `0x10` | 1 | Constant bonus value |
+| `0x11` | 1 | Temporary bonus target; `FF` indicates a spell |
+| `0x12` | 1 | Temporary bonus value or spell ID |
+| `0x13` | 1 | Maximum charges |
+| `0x14` | 2 | Big-endian purchase cost |
+| `0x16` | 1 | Base damage |
+| `0x17` | 1 | Extra damage or armor class |
+
+Local decoding yields the Sorpigal stock and prices used by the native
+blacksmith: Dagger 5, Hand Axe 10, Short Sword 20, Sling 10, Crossbow 50,
+Staff 30, Small Shield 10, Padded Armor 10, Leather Armor 20, Scale Armor 50,
+Ring Mail 100, Chain Mail 200, Torch 2, Rope & Hooks 10, Garlic 5, Magic Herbs
+50, Might Potion 200, and Scroll of Fire 300 gold.
 
 # Configuration and executable metadata
 

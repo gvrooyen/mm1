@@ -50,20 +50,23 @@ The detailed findings are recorded in
 
 ## Current status
 
-The project is currently in the reverse-engineering and early implementation
-phase. The major binary containers are understood well enough to build lossless
-readers. The Rust executable decodes the original `SCREEN0` through `SCREEN9`
-artwork into a palette-indexed 320x200 framebuffer. It alternates between the
-first two title images with the DOS release's outside-in rectangular reveal in
-a 960x600 window using `pixels` and `winit`. Press Space to show or advance the
-`SCREEN2` through `SCREEN9` slideshow; each image advances automatically after
-ten seconds. The original PC-speaker title sequence is rendered to MP3 and
-played through `rodio`.
+The project now includes a native playable Sorpigal slice. Space or Enter opens
+the inn, number keys select up to six supplied roster characters, Enter starts
+town exploration, and arrow keys move and turn through map 0's original walls.
+Town services and special squares are player-facing. Sorpigal encounters use a
+small deterministic native combat subset; trap damage and destinations outside
+Sorpigal remain explicitly unimplemented. The
+executable also decodes the original `SCREEN0` through
+`SCREEN9` artwork into a palette-indexed 320x200 framebuffer. It alternates
+between the first two title images with the DOS release's outside-in rectangular
+reveal in a 960x600 window using `pixels` and `winit`. Press Space to show or
+advance the `SCREEN2` through `SCREEN9` slideshow; each image advances
+automatically after ten seconds. The original PC-speaker title sequence is
+rendered to MP3 and played through `rodio`.
 
-Pressing Escape takes the not-yet-implemented start-game path and exits the
-executable; closing the graphical window exits it as well. If an audio device
-or the title music is unavailable, the executable reports the problem on
-stderr and continues without audio.
+Escape declines or backs out after starting; close the window or press Ctrl-Q
+to quit. If an audio device or the title music is unavailable, the executable
+reports the problem on stderr and continues without audio.
 
 Important remaining research includes:
 
@@ -111,30 +114,30 @@ static characters decoded from `dos/ROSTER.DTA`, including their attributes and
 resources. Press Escape to return to the previous menu, or Ctrl-C/Ctrl-Q to
 quit.
 
-The executable can report the current player view as versioned JSON without
-initializing a window, graphics device, or audio device. It writes and flushes
-the view, then waits for a keypress before exiting. This mode is intended for
-automated tests and non-graphical clients:
+For automated tests and non-graphical clients, the executable can apply a
+complete command script and report the final versioned JSON player view without
+initializing graphical or audio devices. `--commands` is repeatable and each
+value may be comma-separated:
 
 ```sh
 cargo run -- --headless
+cargo run -- --headless --commands start,toggle:1,toggle:2,confirm,forward,left
 ```
 
-Current output:
+Commands include `start`, `toggle:N`, `confirm`, `forward`, `back`, `left`,
+`right`, `unlock`, `bash`, `choose:N`, `food`, `drink`, `tip`, `rumor`, `gather`,
+`restore`, `realign`, `donate`, `train`, `yes`, `no`, and `escape`.
+Combat adds `fight`, `attack:N`, `defend`, `cast` (an explicit unsupported
+response), `flee`, and treasure `open`/`leave`. Monster names, HP, rounds, and
+the active party member are exposed in the schema-v2 combat object. The subset
+decodes monster statistics and rewards from `MM.EXE`, but simplifies initiative,
+physical attacks, fleeing, conditions, and treasure handling.
 
-```json
-{
-  "schema_version": 1,
-  "view": {
-    "kind": "title",
-    "width": 320,
-    "height": 200,
-    "title": "Might and Magic",
-    "subtitle": "Book One: Secret of the Inner Sanctum",
-    "prompt": "Press any key"
-  }
-}
-```
+Each JSON
+view lists the commands valid on its current screen. Output uses schema version
+2 and includes options, party resources, messages, position/facing, and
+directional wall/exits. With no commands it remains the title view. No game
+state or DOS asset is ever written.
 
 Run the development checks with:
 
