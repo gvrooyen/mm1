@@ -27,7 +27,7 @@ const TITLE_MUSIC_PATH: &str = "assets/intro.mp3";
 const TITLE_PICKUP_DURATION: Duration = Duration::from_micros(219_702);
 const TITLE_RING_INTERVAL: Duration = Duration::from_millis(100);
 const TITLE_RING_COUNT: u32 = 20;
-const SLIDESHOW_INTERVAL: Duration = Duration::from_secs(5);
+const SLIDESHOW_INTERVAL: Duration = Duration::from_secs(10);
 const FIRST_SCENE: usize = 2;
 const LAST_SCENE: usize = 9;
 

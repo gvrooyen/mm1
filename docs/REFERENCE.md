@@ -580,8 +580,8 @@ After `SCREEN9`, control returns to the alternating title screens.
 
 Because `machdelay` is a calibrated busy loop that repeatedly polls DOS for
 input, its argument has no exact machine-independent wall-clock conversion. The
-native engine uses five seconds per screen as a period-appropriate approximation
-for a 4.77 MHz IBM PC while retaining immediate keyboard advancement.
+native engine uses ten seconds per screen while retaining immediate keyboard
+advancement.
 
 ## Indexed graphics container
 

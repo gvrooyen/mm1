@@ -57,7 +57,7 @@ artwork into a palette-indexed 320x200 framebuffer. It alternates between the
 first two title images with the DOS release's outside-in rectangular reveal in
 a 960x600 window using `pixels` and `winit`. Press Space to show or advance the
 `SCREEN2` through `SCREEN9` slideshow; each image advances automatically after
-five seconds. The original PC-speaker title sequence is rendered to MP3 and
+ten seconds. The original PC-speaker title sequence is rendered to MP3 and
 played through `rodio`.
 
 Pressing Escape takes the not-yet-implemented start-game path and exits the
