@@ -282,22 +282,22 @@ impl AssetBrowser {
                 _ => return,
             },
             BrowserPage::Monsters => match key {
-                Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) => {
+                Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown) => {
                     self.monster = self
                         .monster
                         .checked_sub(1)
                         .unwrap_or(self.monsters.len() - 1);
                 }
-                Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) => {
+                Key::Named(NamedKey::ArrowRight | NamedKey::ArrowUp) => {
                     self.monster = (self.monster + 1) % self.monsters.len();
                 }
                 _ => return,
             },
             BrowserPage::Walls => match key {
-                Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) => {
+                Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown) => {
                     self.wall = self.wall.checked_sub(1).unwrap_or(self.walls.len() - 1);
                 }
-                Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) => {
+                Key::Named(NamedKey::ArrowRight | NamedKey::ArrowUp) => {
                     self.wall = (self.wall + 1) % self.walls.len();
                 }
                 _ => return,
@@ -924,6 +924,19 @@ mod tests {
     }
 
     #[test]
+    fn monster_browser_up_is_next_down_is_previous() {
+        let mut browser = AssetBrowser::new(vec![vec![BLACK; 104 * 96]; 3], vec![blank_wall_set()]);
+        browser.page = BrowserPage::Monsters;
+
+        browser.key_pressed(&Key::Named(NamedKey::ArrowUp));
+        assert_eq!(browser.monster, 1, "UP moves to the next image");
+        browser.key_pressed(&Key::Named(NamedKey::ArrowUp));
+        assert_eq!(browser.monster, 2);
+        browser.key_pressed(&Key::Named(NamedKey::ArrowDown));
+        assert_eq!(browser.monster, 1, "DOWN moves to the previous image");
+    }
+
+    #[test]
     fn wall_browser_opens_and_wraps_in_both_directions() {
         let mut browser = AssetBrowser::new(
             vec![vec![BLACK; 104 * 96]],
@@ -937,6 +950,24 @@ mod tests {
         assert_eq!(browser.wall, 1);
         browser.key_pressed(&Key::Named(NamedKey::ArrowRight));
         assert_eq!(browser.wall, 0);
+    }
+
+    #[test]
+    fn wall_browser_up_is_next_down_is_previous() {
+        let mut browser = AssetBrowser::new(
+            vec![vec![BLACK; 104 * 96]],
+            vec![blank_wall_set(), blank_wall_set(), blank_wall_set()],
+        );
+        browser.selection = 2;
+        browser.key_pressed(&Key::Named(NamedKey::Enter));
+        assert!(matches!(browser.page, BrowserPage::Walls));
+
+        browser.key_pressed(&Key::Named(NamedKey::ArrowUp));
+        assert_eq!(browser.wall, 1, "UP moves to the next image");
+        browser.key_pressed(&Key::Named(NamedKey::ArrowUp));
+        assert_eq!(browser.wall, 2);
+        browser.key_pressed(&Key::Named(NamedKey::ArrowDown));
+        assert_eq!(browser.wall, 1, "DOWN moves to the previous image");
     }
 
     fn test_browser() -> AssetBrowser {
