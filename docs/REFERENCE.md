@@ -545,6 +545,31 @@ The arithmetic is exact:
 Applying the column traversal and most-significant-pair-first unpacking produces
 coherent, correctly oriented title artwork and text.
 
+### `SCREEN0`/`SCREEN1` intro transition
+
+`MM.EXE` loads `SCREEN0` and `SCREEN1` into separate 16,000-byte buffers and
+alternates between them until input is detected. Each target image is copied
+over the current framebuffer in rectangular rings. For zero-based ring `i`,
+the rectangle is:
+
+```text
+x      = 8i
+y      = 5i
+width  = 320 - 16i
+height = 200 - 10i
+```
+
+The code copies a five-row top strip left-to-right, an eight-pixel right edge
+top-to-bottom, a five-row bottom strip right-to-left, and an eight-pixel left
+edge bottom-to-top. It then applies an adapter-dependent calibrated delay and
+insets to the next ring. The 8:5 inset preserves the 320:200 aspect ratio.
+
+There are 19 complete rings. On the twentieth pass the side height is zero, so
+the routine copies only the top five rows of the remaining 16×10 rectangle and
+returns. The bottom 16×5 center pixels consequently retain the preceding
+framebuffer contents. This termination quirk is preserved by the native title
+animation.
+
 ## Indexed graphics container
 
 `MONPIX.DTA` and `WALLPIX.DTA` share this container:

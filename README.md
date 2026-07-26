@@ -52,14 +52,15 @@ The detailed findings are recorded in
 
 The project is currently in the reverse-engineering and early implementation
 phase. The major binary containers are understood well enough to build lossless
-readers. A basic Rust executable presents a procedurally drawn, palette-indexed
-320x200 title screen in a 960x600 window using `pixels` and `winit`, with the
-original PC-speaker title sequence rendered to MP3 and played through `rodio`.
+readers. The Rust executable decodes the original `SCREEN0` and `SCREEN1`
+artwork into a palette-indexed 320x200 framebuffer and alternates between them
+with the DOS release's outside-in rectangular reveal in a 960x600 window using
+`pixels` and `winit`. The original PC-speaker title sequence is rendered to MP3
+and played through `rodio`.
 
-The title screen is a scaffold, not decoded original artwork. Pressing any key
-exits the executable; closing the graphical window exits it as well. If an
-audio device or the title music is unavailable, the executable reports the
-problem on stderr and continues without audio.
+Pressing any key exits the executable; closing the graphical window exits it as
+well. If an audio device or the title music is unavailable, the executable
+reports the problem on stderr and continues without audio.
 
 Important remaining research includes:
 

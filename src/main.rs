@@ -4,7 +4,7 @@ use std::{
     fs::{self, File},
     io::{self, IsTerminal, Read, Write},
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use crossterm::{event, terminal};
@@ -15,7 +15,7 @@ use winit::{
     application::ApplicationHandler,
     dpi::{LogicalSize, PhysicalSize},
     event::{ElementState, WindowEvent},
-    event_loop::{ActiveEventLoop, EventLoop},
+    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
     keyboard::{Key, ModifiersState, NamedKey},
     window::{Window, WindowId},
 };
@@ -25,10 +25,11 @@ const HEIGHT: u32 = 200;
 const SCALE: u32 = 3;
 const TITLE_MUSIC_PATH: &str = "assets/intro.mp3";
 const TITLE_PICKUP_DURATION: Duration = Duration::from_micros(219_702);
+const TITLE_RING_INTERVAL: Duration = Duration::from_millis(35);
+const TITLE_RING_COUNT: u32 = 20;
 
 const BLACK: u8 = 0;
 const CYAN: u8 = 1;
-const MAGENTA: u8 = 2;
 const WHITE: u8 = 3;
 
 const PALETTE: [[u8; 4]; 4] = [
@@ -145,7 +146,8 @@ impl Drop for RawModeGuard {
 
 fn run_windowed() -> Result<(), Box<dyn Error>> {
     let event_loop = EventLoop::new()?;
-    let mut app = GameWindow::new(TitleMusic::start());
+    let animation = TitleAnimation::load()?;
+    let mut app = GameWindow::new(animation, TitleMusic::start());
     event_loop.run_app(&mut app)?;
     Ok(())
 }
@@ -632,16 +634,18 @@ impl TitleMusic {
 struct GameWindow {
     window: Option<Arc<Window>>,
     pixels: Option<Pixels<'static>>,
-    framebuffer: Vec<u8>,
+    animation: TitleAnimation,
+    next_ring: Instant,
     _title_music: Option<TitleMusic>,
 }
 
 impl GameWindow {
-    fn new(title_music: Option<TitleMusic>) -> Self {
+    fn new(animation: TitleAnimation, title_music: Option<TitleMusic>) -> Self {
         Self {
             window: None,
             pixels: None,
-            framebuffer: title_framebuffer(),
+            animation,
+            next_ring: Instant::now() + TITLE_RING_INTERVAL,
             _title_music: title_music,
         }
     }
@@ -668,8 +672,10 @@ impl ApplicationHandler for GameWindow {
         let pixels = Pixels::new(WIDTH, HEIGHT, surface)
             .expect("could not create the game rendering surface");
 
+        window.request_redraw();
         self.pixels = Some(pixels);
         self.window = Some(window);
+        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_ring));
     }
 
     fn window_event(
@@ -694,7 +700,7 @@ impl ApplicationHandler for GameWindow {
                 }
             }
             WindowEvent::RedrawRequested => {
-                copy_to_rgba(&self.framebuffer, pixels.frame_mut());
+                copy_to_rgba(self.animation.framebuffer(), pixels.frame_mut());
                 if let Err(error) = pixels.render() {
                     eprintln!("could not render the title screen: {error}");
                     event_loop.exit();
@@ -704,34 +710,98 @@ impl ApplicationHandler for GameWindow {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(window) = &self.window {
-            window.request_redraw();
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+        if now >= self.next_ring {
+            self.animation.advance();
+            self.next_ring = now + TITLE_RING_INTERVAL;
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
+        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_ring));
+    }
+}
+
+struct TitleAnimation {
+    images: [Vec<u8>; 2],
+    framebuffer: Vec<u8>,
+    image: usize,
+    ring: u32,
+}
+
+impl TitleAnimation {
+    fn load() -> Result<Self, Box<dyn Error>> {
+        let images = [
+            decode_screen(&fs::read("dos/SCREEN0")?)?,
+            decode_screen(&fs::read("dos/SCREEN1")?)?,
+        ];
+        let mut animation = Self {
+            images,
+            framebuffer: vec![BLACK; (WIDTH * HEIGHT) as usize],
+            image: 0,
+            ring: 0,
+        };
+        animation.advance();
+        Ok(animation)
+    }
+
+    fn framebuffer(&self) -> &[u8] {
+        &self.framebuffer
+    }
+
+    fn advance(&mut self) {
+        let inset_x = self.ring * 8;
+        let inset_y = self.ring * 5;
+        let width = WIDTH - inset_x * 2;
+        let side_height = HEIGHT - (inset_y + 5) * 2;
+        let image = &self.images[self.image];
+
+        copy_rect(image, &mut self.framebuffer, inset_x, inset_y, width, 5);
+
+        // MM.EXE stops here on the final pass, leaving its original 16x5-pixel
+        // center-bottom quirk rather than drawing a twentieth complete ring.
+        if side_height > 0 {
+            copy_rect(
+                image,
+                &mut self.framebuffer,
+                WIDTH - inset_x - 8,
+                inset_y + 5,
+                8,
+                side_height,
+            );
+            copy_rect(
+                image,
+                &mut self.framebuffer,
+                inset_x,
+                HEIGHT - inset_y - 5,
+                width,
+                5,
+            );
+            copy_rect(
+                image,
+                &mut self.framebuffer,
+                inset_x,
+                inset_y + 5,
+                8,
+                side_height,
+            );
+        }
+
+        self.ring += 1;
+        if self.ring == TITLE_RING_COUNT {
+            self.ring = 0;
+            self.image = (self.image + 1) % self.images.len();
         }
     }
 }
 
-fn title_framebuffer() -> Vec<u8> {
-    let mut frame = vec![BLACK; (WIDTH * HEIGHT) as usize];
-
-    fill_rect(&mut frame, 5, 5, 310, 2, CYAN);
-    fill_rect(&mut frame, 5, 193, 310, 2, MAGENTA);
-    fill_rect(&mut frame, 5, 7, 2, 186, CYAN);
-    fill_rect(&mut frame, 313, 7, 2, 186, MAGENTA);
-
-    draw_text(&mut frame, 25, 52, "MIGHT AND MAGIC", 3, WHITE);
-    draw_text(&mut frame, 108, 88, "BOOK ONE", 2, CYAN);
-    draw_text(
-        &mut frame,
-        58,
-        110,
-        "SECRET OF THE INNER SANCTUM",
-        1,
-        MAGENTA,
-    );
-    draw_text(&mut frame, 116, 166, "PRESS ANY KEY", 1, WHITE);
-
-    frame
+fn copy_rect(source: &[u8], destination: &mut [u8], x: u32, y: u32, width: u32, height: u32) {
+    for row in y..y + height {
+        let start = (row * WIDTH + x) as usize;
+        let end = start + width as usize;
+        destination[start..end].copy_from_slice(&source[start..end]);
+    }
 }
 
 fn copy_to_rgba(indexed: &[u8], rgba: &mut [u8]) {
@@ -812,60 +882,37 @@ fn dos_glyph(character: char) -> [u8; 8] {
     }
 }
 
-fn draw_text(frame: &mut [u8], x: u32, y: u32, text: &str, scale: u32, color: u8) {
-    let mut cursor = x;
-    for character in text.chars() {
-        let glyph = glyph(character);
-        for (row, bits) in glyph.iter().enumerate() {
-            for column in 0..5 {
-                if bits & (1 << (4 - column)) != 0 {
-                    fill_rect(
-                        frame,
-                        cursor + column * scale,
-                        y + row as u32 * scale,
-                        scale,
-                        scale,
-                        color,
-                    );
-                }
-            }
-        }
-        cursor += 6 * scale;
-    }
-}
-
-fn glyph(character: char) -> [u8; 7] {
-    match character {
-        'A' => [0x0e, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11],
-        'B' => [0x1e, 0x11, 0x11, 0x1e, 0x11, 0x11, 0x1e],
-        'C' => [0x0e, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0e],
-        'D' => [0x1e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x1e],
-        'E' => [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x1f],
-        'F' => [0x1f, 0x10, 0x10, 0x1e, 0x10, 0x10, 0x10],
-        'G' => [0x0e, 0x11, 0x10, 0x17, 0x11, 0x11, 0x0f],
-        'H' => [0x11, 0x11, 0x11, 0x1f, 0x11, 0x11, 0x11],
-        'I' => [0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x1f],
-        'K' => [0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11],
-        'M' => [0x11, 0x1b, 0x15, 0x15, 0x11, 0x11, 0x11],
-        'N' => [0x11, 0x19, 0x15, 0x13, 0x11, 0x11, 0x11],
-        'O' => [0x0e, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e],
-        'P' => [0x1e, 0x11, 0x11, 0x1e, 0x10, 0x10, 0x10],
-        'R' => [0x1e, 0x11, 0x11, 0x1e, 0x14, 0x12, 0x11],
-        'S' => [0x0f, 0x10, 0x10, 0x0e, 0x01, 0x01, 0x1e],
-        'T' => [0x1f, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04],
-        'U' => [0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0e],
-        'Y' => [0x11, 0x11, 0x0a, 0x04, 0x04, 0x04, 0x04],
-        _ => [0; 7],
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn title_framebuffer_has_the_logical_screen_dimensions() {
-        assert_eq!(title_framebuffer().len(), (WIDTH * HEIGHT) as usize);
+    fn title_animation_uses_the_logical_screen_dimensions() {
+        let animation = TitleAnimation::load().unwrap();
+        assert_eq!(animation.framebuffer().len(), (WIDTH * HEIGHT) as usize);
+    }
+
+    #[test]
+    fn title_animation_reveals_screen_zero_then_screen_one() {
+        let mut animation = TitleAnimation::load().unwrap();
+
+        for _ in 1..TITLE_RING_COUNT {
+            animation.advance();
+        }
+        assert_eq!(animation.image, 1);
+        assert_eq!(
+            &animation.framebuffer[..WIDTH as usize * 95],
+            &animation.images[0][..WIDTH as usize * 95]
+        );
+
+        for _ in 0..TITLE_RING_COUNT {
+            animation.advance();
+        }
+        assert_eq!(animation.image, 0);
+        assert_eq!(
+            &animation.framebuffer[..WIDTH as usize * 95],
+            &animation.images[1][..WIDTH as usize * 95]
+        );
     }
 
     #[test]
