@@ -658,7 +658,7 @@ impl GameWindow {
             return true;
         }
 
-        if key == &Key::Character(" ".into()) {
+        if key == &Key::Named(NamedKey::Space) {
             if self.animation.in_slideshow() {
                 self.animation.advance_slideshow();
             } else {
@@ -994,9 +994,9 @@ mod tests {
     fn title_keys_start_and_advance_the_slideshow_or_exit() {
         let mut window = GameWindow::new(TitleAnimation::load().unwrap(), None);
 
-        assert!(!window.key_pressed(&Key::Character(" ".into())));
+        assert!(!window.key_pressed(&Key::Named(NamedKey::Space)));
         assert_eq!(window.animation.scene, Some(FIRST_SCENE));
-        assert!(!window.key_pressed(&Key::Character(" ".into())));
+        assert!(!window.key_pressed(&Key::Named(NamedKey::Space)));
         assert_eq!(window.animation.scene, Some(FIRST_SCENE + 1));
         assert!(!window.key_pressed(&Key::Character("x".into())));
         assert_eq!(window.animation.scene, Some(FIRST_SCENE + 1));
