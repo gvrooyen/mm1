@@ -759,8 +759,6 @@ impl TitleAnimation {
 
         copy_rect(image, &mut self.framebuffer, inset_x, inset_y, width, 5);
 
-        // MM.EXE stops here on the final pass, leaving its original 16x5-pixel
-        // center-bottom quirk rather than drawing a twentieth complete ring.
         if side_height > 0 {
             copy_rect(
                 image,
@@ -770,14 +768,16 @@ impl TitleAnimation {
                 8,
                 side_height,
             );
-            copy_rect(
-                image,
-                &mut self.framebuffer,
-                inset_x,
-                HEIGHT - inset_y - 5,
-                width,
-                5,
-            );
+        }
+        copy_rect(
+            image,
+            &mut self.framebuffer,
+            inset_x,
+            HEIGHT - inset_y - 5,
+            width,
+            5,
+        );
+        if side_height > 0 {
             copy_rect(
                 image,
                 &mut self.framebuffer,
@@ -900,19 +900,13 @@ mod tests {
             animation.advance();
         }
         assert_eq!(animation.image, 1);
-        assert_eq!(
-            &animation.framebuffer[..WIDTH as usize * 95],
-            &animation.images[0][..WIDTH as usize * 95]
-        );
+        assert_eq!(animation.framebuffer, animation.images[0]);
 
         for _ in 0..TITLE_RING_COUNT {
             animation.advance();
         }
         assert_eq!(animation.image, 0);
-        assert_eq!(
-            &animation.framebuffer[..WIDTH as usize * 95],
-            &animation.images[1][..WIDTH as usize * 95]
-        );
+        assert_eq!(animation.framebuffer, animation.images[1]);
     }
 
     #[test]

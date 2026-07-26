@@ -567,8 +567,8 @@ insets to the next ring. The 8:5 inset preserves the 320:200 aspect ratio.
 There are 19 complete rings. On the twentieth pass the side height is zero, so
 the routine copies only the top five rows of the remaining 16×10 rectangle and
 returns. The bottom 16×5 center pixels consequently retain the preceding
-framebuffer contents. This termination quirk is preserved by the native title
-animation.
+framebuffer contents. The native title animation deliberately also copies the
+bottom five rows on this final pass so that each transitioned image is complete.
 
 ## Indexed graphics container
 
