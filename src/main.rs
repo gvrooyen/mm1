@@ -151,22 +151,28 @@ fn run_windowed() -> Result<(), Box<dyn Error>> {
 }
 
 fn run_asset_browser() -> Result<(), Box<dyn Error>> {
+    let mut images = Vec::new();
+    for index in 0..10 {
+        let data = fs::read(format!("dos/SCREEN{index}"))?;
+        images.push(decode_screen(&data)?);
+    }
     let monster_data = fs::read("dos/MONPIX.DTA")?;
     let monsters = decode_monsters(&monster_data)?;
     let wall_data = fs::read("dos/WALLPIX.DTA")?;
     let walls = decode_wall_sets(&wall_data)?;
     let event_loop = EventLoop::new()?;
-    let mut app = AssetBrowser::new(monsters, walls);
+    let mut app = AssetBrowser::new(images, monsters, walls);
     event_loop.run_app(&mut app)?;
     Ok(())
 }
 
-const BROWSER_ITEMS: [&str; 4] = ["MAPS", "MONSTERS", "WALLS", "ROSTER"];
+const BROWSER_ITEMS: [&str; 5] = ["MAPS", "MONSTERS", "WALLS", "IMAGES", "ROSTER"];
 
 enum BrowserPage {
     Menu,
     Monsters,
     Walls,
+    Images,
 }
 
 struct WallSet {
@@ -177,25 +183,29 @@ struct AssetBrowser {
     window: Option<Arc<Window>>,
     pixels: Option<Pixels<'static>>,
     framebuffer: Vec<u8>,
+    images: Vec<Vec<u8>>,
     monsters: Vec<Vec<u8>>,
     walls: Vec<WallSet>,
     page: BrowserPage,
     selection: usize,
+    image: usize,
     monster: usize,
     wall: usize,
     modifiers: ModifiersState,
 }
 
 impl AssetBrowser {
-    fn new(monsters: Vec<Vec<u8>>, walls: Vec<WallSet>) -> Self {
+    fn new(images: Vec<Vec<u8>>, monsters: Vec<Vec<u8>>, walls: Vec<WallSet>) -> Self {
         let mut browser = Self {
             window: None,
             pixels: None,
             framebuffer: vec![BLACK; (WIDTH * HEIGHT) as usize],
+            images,
             monsters,
             walls,
             page: BrowserPage::Menu,
             selection: 0,
+            image: 0,
             monster: 0,
             wall: 0,
             modifiers: ModifiersState::empty(),
@@ -250,12 +260,18 @@ impl AssetBrowser {
                     CYAN,
                 );
             }
+            BrowserPage::Images => {
+                self.framebuffer.copy_from_slice(&self.images[self.image]);
+            }
         }
     }
 
     fn key_pressed(&mut self, key: &Key) {
         if key == &Key::Named(NamedKey::Escape) {
-            if matches!(self.page, BrowserPage::Monsters | BrowserPage::Walls) {
+            if matches!(
+                self.page,
+                BrowserPage::Monsters | BrowserPage::Walls | BrowserPage::Images
+            ) {
                 self.page = BrowserPage::Menu;
                 self.redraw_framebuffer();
             }
@@ -279,6 +295,9 @@ impl AssetBrowser {
                 Key::Named(NamedKey::Enter) if self.selection == 2 => {
                     self.page = BrowserPage::Walls;
                 }
+                Key::Named(NamedKey::Enter) if self.selection == 3 => {
+                    self.page = BrowserPage::Images;
+                }
                 _ => return,
             },
             BrowserPage::Monsters => match key {
@@ -299,6 +318,15 @@ impl AssetBrowser {
                 }
                 Key::Named(NamedKey::ArrowRight | NamedKey::ArrowUp) => {
                     self.wall = (self.wall + 1) % self.walls.len();
+                }
+                _ => return,
+            },
+            BrowserPage::Images => match key {
+                Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown) => {
+                    self.image = self.image.checked_sub(1).unwrap_or(self.images.len() - 1);
+                }
+                Key::Named(NamedKey::ArrowRight | NamedKey::ArrowUp) => {
+                    self.image = (self.image + 1) % self.images.len();
                 }
                 _ => return,
             },
@@ -405,6 +433,18 @@ impl ApplicationHandler for AssetBrowser {
             window.request_redraw();
         }
     }
+}
+
+fn decode_screen(data: &[u8]) -> Result<Vec<u8>, String> {
+    let compressed_size = read_u16(data, 0)? as usize;
+    let payload_end = 2usize
+        .checked_add(compressed_size)
+        .ok_or("SCREEN image size overflow")?;
+    if payload_end != data.len() {
+        return Err("SCREEN image compressed size does not match its file size".into());
+    }
+    let packed = decode_rle(&data[2..payload_end], 16_000, "SCREEN image")?;
+    Ok(unpack_image(&packed, WIDTH as usize, HEIGHT as usize))
 }
 
 fn decode_monsters(data: &[u8]) -> Result<Vec<Vec<u8>>, String> {
@@ -854,6 +894,17 @@ mod tests {
     }
 
     #[test]
+    fn supplied_screen_files_decode_as_full_screen_images() {
+        for index in 0..10 {
+            let data = fs::read(format!("dos/SCREEN{index}")).unwrap();
+            let image = decode_screen(&data).unwrap();
+
+            assert_eq!(image.len(), (WIDTH * HEIGHT) as usize);
+            assert!(image.iter().all(|pixel| *pixel < 4));
+        }
+    }
+
+    #[test]
     fn supplied_wall_file_decodes_all_component_sets() {
         let data = fs::read("dos/WALLPIX.DTA").unwrap();
         let walls = decode_wall_sets(&data).unwrap();
@@ -914,7 +965,11 @@ mod tests {
 
     #[test]
     fn monster_browser_wraps_in_both_directions() {
-        let mut browser = AssetBrowser::new(vec![vec![BLACK; 104 * 96]; 2], vec![blank_wall_set()]);
+        let mut browser = AssetBrowser::new(
+            blank_images(1),
+            vec![vec![BLACK; 104 * 96]; 2],
+            vec![blank_wall_set()],
+        );
         browser.page = BrowserPage::Monsters;
 
         browser.key_pressed(&Key::Named(NamedKey::ArrowLeft));
@@ -925,7 +980,11 @@ mod tests {
 
     #[test]
     fn monster_browser_up_is_next_down_is_previous() {
-        let mut browser = AssetBrowser::new(vec![vec![BLACK; 104 * 96]; 3], vec![blank_wall_set()]);
+        let mut browser = AssetBrowser::new(
+            blank_images(1),
+            vec![vec![BLACK; 104 * 96]; 3],
+            vec![blank_wall_set()],
+        );
         browser.page = BrowserPage::Monsters;
 
         browser.key_pressed(&Key::Named(NamedKey::ArrowUp));
@@ -939,6 +998,7 @@ mod tests {
     #[test]
     fn wall_browser_opens_and_wraps_in_both_directions() {
         let mut browser = AssetBrowser::new(
+            blank_images(1),
             vec![vec![BLACK; 104 * 96]],
             vec![blank_wall_set(), blank_wall_set()],
         );
@@ -955,6 +1015,7 @@ mod tests {
     #[test]
     fn wall_browser_up_is_next_down_is_previous() {
         let mut browser = AssetBrowser::new(
+            blank_images(1),
             vec![vec![BLACK; 104 * 96]],
             vec![blank_wall_set(), blank_wall_set(), blank_wall_set()],
         );
@@ -970,8 +1031,33 @@ mod tests {
         assert_eq!(browser.wall, 1, "DOWN moves to the previous image");
     }
 
+    #[test]
+    fn image_browser_opens_and_wraps_in_both_directions() {
+        let mut browser = AssetBrowser::new(
+            blank_images(2),
+            vec![vec![BLACK; 104 * 96]],
+            vec![blank_wall_set()],
+        );
+        browser.selection = 3;
+        browser.key_pressed(&Key::Named(NamedKey::Enter));
+        assert!(matches!(browser.page, BrowserPage::Images));
+
+        browser.key_pressed(&Key::Named(NamedKey::ArrowLeft));
+        assert_eq!(browser.image, 1);
+        browser.key_pressed(&Key::Named(NamedKey::ArrowRight));
+        assert_eq!(browser.image, 0);
+    }
+
     fn test_browser() -> AssetBrowser {
-        AssetBrowser::new(vec![vec![BLACK; 104 * 96]], vec![blank_wall_set()])
+        AssetBrowser::new(
+            blank_images(1),
+            vec![vec![BLACK; 104 * 96]],
+            vec![blank_wall_set()],
+        )
+    }
+
+    fn blank_images(count: usize) -> Vec<Vec<u8>> {
+        vec![vec![BLACK; (WIDTH * HEIGHT) as usize]; count]
     }
 
     fn blank_wall_set() -> WallSet {
