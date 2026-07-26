@@ -104,9 +104,10 @@ images, and roster entries. `MONSTERS` shows all 76 pictures decoded from
 `dos/MONPIX.DTA`; `WALLS` shows representative perspective corridors for all 18
 environment sets decoded from `dos/WALLPIX.DTA`; and `IMAGES` shows the ten
 full-screen pictures decoded from `dos/SCREEN0` through `dos/SCREEN9`. Use the
-arrow keys to move through each collection. Press Escape to return to the
-previous menu, or Ctrl-C/Ctrl-Q to quit. The maps and roster entries are
-placeholders and do nothing when selected.
+arrow keys to move through each collection. `ROSTER` shows the six populated
+static characters decoded from `dos/ROSTER.DTA`, including their attributes and
+resources. Press Escape to return to the previous menu, or Ctrl-C/Ctrl-Q to
+quit. Maps remain a placeholder and do nothing when selected.
 
 The executable can report the current player view as versioned JSON without
 initializing a window, graphics device, or audio device. It writes and flushes

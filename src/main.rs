@@ -1,3 +1,5 @@
+mod character;
+
 use std::{
     env,
     error::Error,
@@ -19,6 +21,8 @@ use winit::{
     keyboard::{Key, ModifiersState, NamedKey},
     window::{Window, WindowId},
 };
+
+use character::{Character, decode_roster};
 
 const WIDTH: u32 = 320;
 const HEIGHT: u32 = 200;
@@ -165,8 +169,14 @@ fn run_asset_browser() -> Result<(), Box<dyn Error>> {
     let monsters = decode_monsters(&monster_data)?;
     let wall_data = fs::read("dos/WALLPIX.DTA")?;
     let walls = decode_wall_sets(&wall_data)?;
+    let roster_data = fs::read("dos/ROSTER.DTA")?;
+    let characters = decode_roster(&roster_data)?
+        .into_iter()
+        .filter(|entry| entry.metadata != 0)
+        .map(|entry| entry.character)
+        .collect();
     let event_loop = EventLoop::new()?;
-    let mut app = AssetBrowser::new(images, monsters, walls);
+    let mut app = AssetBrowser::new(images, monsters, walls, characters);
     event_loop.run_app(&mut app)?;
     Ok(())
 }
@@ -178,6 +188,7 @@ enum BrowserPage {
     Monsters,
     Walls,
     Images,
+    Roster,
 }
 
 struct WallSet {
@@ -191,16 +202,23 @@ struct AssetBrowser {
     images: Vec<Vec<u8>>,
     monsters: Vec<Vec<u8>>,
     walls: Vec<WallSet>,
+    characters: Vec<Character>,
     page: BrowserPage,
     selection: usize,
     image: usize,
     monster: usize,
     wall: usize,
+    character: usize,
     modifiers: ModifiersState,
 }
 
 impl AssetBrowser {
-    fn new(images: Vec<Vec<u8>>, monsters: Vec<Vec<u8>>, walls: Vec<WallSet>) -> Self {
+    fn new(
+        images: Vec<Vec<u8>>,
+        monsters: Vec<Vec<u8>>,
+        walls: Vec<WallSet>,
+        characters: Vec<Character>,
+    ) -> Self {
         let mut browser = Self {
             window: None,
             pixels: None,
@@ -208,11 +226,13 @@ impl AssetBrowser {
             images,
             monsters,
             walls,
+            characters,
             page: BrowserPage::Menu,
             selection: 0,
             image: 0,
             monster: 0,
             wall: 0,
+            character: 0,
             modifiers: ModifiersState::empty(),
         };
         browser.redraw_framebuffer();
@@ -268,6 +288,7 @@ impl AssetBrowser {
             BrowserPage::Images => {
                 self.framebuffer.copy_from_slice(&self.images[self.image]);
             }
+            BrowserPage::Roster => self.draw_character(),
         }
     }
 
@@ -275,7 +296,10 @@ impl AssetBrowser {
         if key == &Key::Named(NamedKey::Escape) {
             if matches!(
                 self.page,
-                BrowserPage::Monsters | BrowserPage::Walls | BrowserPage::Images
+                BrowserPage::Monsters
+                    | BrowserPage::Walls
+                    | BrowserPage::Images
+                    | BrowserPage::Roster
             ) {
                 self.page = BrowserPage::Menu;
                 self.redraw_framebuffer();
@@ -302,6 +326,11 @@ impl AssetBrowser {
                 }
                 Key::Named(NamedKey::Enter) if self.selection == 3 => {
                     self.page = BrowserPage::Images;
+                }
+                Key::Named(NamedKey::Enter)
+                    if self.selection == 4 && !self.characters.is_empty() =>
+                {
+                    self.page = BrowserPage::Roster;
                 }
                 _ => return,
             },
@@ -335,8 +364,103 @@ impl AssetBrowser {
                 }
                 _ => return,
             },
+            BrowserPage::Roster => match key {
+                Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowDown) => {
+                    self.character = self
+                        .character
+                        .checked_sub(1)
+                        .unwrap_or(self.characters.len() - 1);
+                }
+                Key::Named(NamedKey::ArrowRight | NamedKey::ArrowUp) => {
+                    self.character = (self.character + 1) % self.characters.len();
+                }
+                _ => return,
+            },
         }
         self.redraw_framebuffer();
+    }
+
+    fn draw_character(&mut self) {
+        let character = &self.characters[self.character];
+        let label = |value, names: &[&str]| {
+            names
+                .get(value as usize)
+                .filter(|name| !name.is_empty())
+                .map(|name| (*name).to_owned())
+                .unwrap_or_else(|| format!("UNKNOWN {value}"))
+        };
+        let lines = [
+            format!(
+                "{}   {} / {}",
+                character.name,
+                self.character + 1,
+                self.characters.len()
+            ),
+            format!(
+                "{}  {}  {}  {}",
+                label(character.sex, &["", "MALE", "FEMALE"]),
+                label(
+                    character.current_alignment,
+                    &["", "GOOD", "NEUTRAL", "EVIL"]
+                ),
+                label(
+                    character.race,
+                    &["", "HUMAN", "ELF", "DWARF", "GNOME", "HALF-ORC"]
+                ),
+                label(
+                    character.class,
+                    &[
+                        "", "KNIGHT", "PALADIN", "ARCHER", "CLERIC", "SORCERER", "ROBBER"
+                    ]
+                )
+            ),
+            format!(
+                "LEVEL {:3}   AGE {:3}   CONDITION {}",
+                character.level.current, character.age, character.condition
+            ),
+            format!(
+                "INT {:2}  MGT {:2}  PER {:2}  END {:2}",
+                character.intellect.current,
+                character.might.current,
+                character.personality.current,
+                character.endurance.current
+            ),
+            format!(
+                "SPD {:2}  ACY {:2}  LCK {:2}  AC {:2}",
+                character.speed.current,
+                character.accuracy.current,
+                character.luck.current,
+                character.armor_class.current
+            ),
+            format!(
+                "HP {:3} / {:3}   SP {:3} / {:3}",
+                character.current_hp,
+                character.effective_max_hp,
+                character.current_spell_points,
+                character.maximum_spell_points
+            ),
+            format!("EXPERIENCE {}", character.experience),
+            format!(
+                "GOLD {}   GEMS {}   FOOD {}",
+                character.gold, character.gems, character.food
+            ),
+        ];
+        for (index, line) in lines.iter().enumerate() {
+            draw_dos_text(
+                &mut self.framebuffer,
+                8,
+                12 + index as u32 * 20,
+                line,
+                if index == 0 { WHITE } else { CYAN },
+            );
+        }
+        draw_dos_text(
+            &mut self.framebuffer,
+            60,
+            184,
+            "ARROWS: PREVIOUS / NEXT",
+            WHITE,
+        );
     }
 }
 
@@ -943,6 +1067,7 @@ fn dos_glyph(character: char) -> [u8; 8] {
         '8' => [0x78, 0xcc, 0xcc, 0x78, 0xcc, 0xcc, 0x78, 0x00],
         '9' => [0x78, 0xcc, 0xcc, 0x7c, 0x0c, 0x18, 0x70, 0x00],
         ':' => [0x00, 0x30, 0x30, 0x00, 0x00, 0x30, 0x30, 0x00],
+        '-' => [0x00, 0x00, 0x00, 0xfc, 0x00, 0x00, 0x00, 0x00],
         '/' => [0x06, 0x0c, 0x18, 0x30, 0x60, 0xc0, 0x80, 0x00],
         _ => [0; 8],
     }
@@ -1104,6 +1229,7 @@ mod tests {
             blank_images(1),
             vec![vec![BLACK; 104 * 96]; 2],
             vec![blank_wall_set()],
+            test_characters(),
         );
         browser.page = BrowserPage::Monsters;
 
@@ -1119,6 +1245,7 @@ mod tests {
             blank_images(1),
             vec![vec![BLACK; 104 * 96]; 3],
             vec![blank_wall_set()],
+            test_characters(),
         );
         browser.page = BrowserPage::Monsters;
 
@@ -1136,6 +1263,7 @@ mod tests {
             blank_images(1),
             vec![vec![BLACK; 104 * 96]],
             vec![blank_wall_set(), blank_wall_set()],
+            test_characters(),
         );
         browser.selection = 2;
         browser.key_pressed(&Key::Named(NamedKey::Enter));
@@ -1153,6 +1281,7 @@ mod tests {
             blank_images(1),
             vec![vec![BLACK; 104 * 96]],
             vec![blank_wall_set(), blank_wall_set(), blank_wall_set()],
+            test_characters(),
         );
         browser.selection = 2;
         browser.key_pressed(&Key::Named(NamedKey::Enter));
@@ -1172,6 +1301,7 @@ mod tests {
             blank_images(2),
             vec![vec![BLACK; 104 * 96]],
             vec![blank_wall_set()],
+            test_characters(),
         );
         browser.selection = 3;
         browser.key_pressed(&Key::Named(NamedKey::Enter));
@@ -1183,12 +1313,37 @@ mod tests {
         assert_eq!(browser.image, 0);
     }
 
+    #[test]
+    fn roster_opens_wraps_and_escape_returns_to_menu() {
+        let mut browser = test_browser();
+        browser.selection = 4;
+        browser.key_pressed(&Key::Named(NamedKey::Enter));
+        assert!(matches!(browser.page, BrowserPage::Roster));
+
+        browser.key_pressed(&Key::Named(NamedKey::ArrowLeft));
+        assert_eq!(browser.character, 5);
+        browser.key_pressed(&Key::Named(NamedKey::ArrowRight));
+        assert_eq!(browser.character, 0);
+        browser.key_pressed(&Key::Named(NamedKey::Escape));
+        assert!(matches!(browser.page, BrowserPage::Menu));
+    }
+
     fn test_browser() -> AssetBrowser {
         AssetBrowser::new(
             blank_images(1),
             vec![vec![BLACK; 104 * 96]],
             vec![blank_wall_set()],
+            test_characters(),
         )
+    }
+
+    fn test_characters() -> Vec<Character> {
+        decode_roster(include_bytes!("../dos/ROSTER.DTA"))
+            .unwrap()
+            .into_iter()
+            .filter(|entry| entry.metadata != 0)
+            .map(|entry| entry.character)
+            .collect()
     }
 
     fn blank_images(count: usize) -> Vec<Vec<u8>> {
