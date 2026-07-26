@@ -153,8 +153,10 @@ fn run_windowed() -> Result<(), Box<dyn Error>> {
 fn run_asset_browser() -> Result<(), Box<dyn Error>> {
     let monster_data = fs::read("dos/MONPIX.DTA")?;
     let monsters = decode_monsters(&monster_data)?;
+    let wall_data = fs::read("dos/WALLPIX.DTA")?;
+    let walls = decode_wall_sets(&wall_data)?;
     let event_loop = EventLoop::new()?;
-    let mut app = AssetBrowser::new(monsters);
+    let mut app = AssetBrowser::new(monsters, walls);
     event_loop.run_app(&mut app)?;
     Ok(())
 }
@@ -164,6 +166,11 @@ const BROWSER_ITEMS: [&str; 4] = ["MAPS", "MONSTERS", "WALLS", "ROSTER"];
 enum BrowserPage {
     Menu,
     Monsters,
+    Walls,
+}
+
+struct WallSet {
+    components: Vec<Vec<u8>>,
 }
 
 struct AssetBrowser {
@@ -171,22 +178,26 @@ struct AssetBrowser {
     pixels: Option<Pixels<'static>>,
     framebuffer: Vec<u8>,
     monsters: Vec<Vec<u8>>,
+    walls: Vec<WallSet>,
     page: BrowserPage,
     selection: usize,
     monster: usize,
+    wall: usize,
     modifiers: ModifiersState,
 }
 
 impl AssetBrowser {
-    fn new(monsters: Vec<Vec<u8>>) -> Self {
+    fn new(monsters: Vec<Vec<u8>>, walls: Vec<WallSet>) -> Self {
         let mut browser = Self {
             window: None,
             pixels: None,
             framebuffer: vec![BLACK; (WIDTH * HEIGHT) as usize],
             monsters,
+            walls,
             page: BrowserPage::Menu,
             selection: 0,
             monster: 0,
+            wall: 0,
             modifiers: ModifiersState::empty(),
         };
         browser.redraw_framebuffer();
@@ -226,12 +237,25 @@ impl AssetBrowser {
                     CYAN,
                 );
             }
+            BrowserPage::Walls => {
+                draw_wall_preview(&mut self.framebuffer, &self.walls[self.wall], 40, 32);
+                draw_dos_text(&mut self.framebuffer, 140, 16, "WALLS", WHITE);
+                let position = format!("{:02} / {:02}", self.wall + 1, self.walls.len());
+                draw_dos_text(&mut self.framebuffer, 124, 164, &position, WHITE);
+                draw_dos_text(
+                    &mut self.framebuffer,
+                    60,
+                    184,
+                    "ARROWS: PREVIOUS / NEXT",
+                    CYAN,
+                );
+            }
         }
     }
 
     fn key_pressed(&mut self, key: &Key) {
         if key == &Key::Named(NamedKey::Escape) {
-            if matches!(self.page, BrowserPage::Monsters) {
+            if matches!(self.page, BrowserPage::Monsters | BrowserPage::Walls) {
                 self.page = BrowserPage::Menu;
                 self.redraw_framebuffer();
             }
@@ -252,6 +276,9 @@ impl AssetBrowser {
                 Key::Named(NamedKey::Enter) if self.selection == 1 => {
                     self.page = BrowserPage::Monsters;
                 }
+                Key::Named(NamedKey::Enter) if self.selection == 2 => {
+                    self.page = BrowserPage::Walls;
+                }
                 _ => return,
             },
             BrowserPage::Monsters => match key {
@@ -266,8 +293,42 @@ impl AssetBrowser {
                 }
                 _ => return,
             },
+            BrowserPage::Walls => match key {
+                Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowUp) => {
+                    self.wall = self.wall.checked_sub(1).unwrap_or(self.walls.len() - 1);
+                }
+                Key::Named(NamedKey::ArrowRight | NamedKey::ArrowDown) => {
+                    self.wall = (self.wall + 1) % self.walls.len();
+                }
+                _ => return,
+            },
         }
         self.redraw_framebuffer();
+    }
+}
+
+fn draw_wall_preview(frame: &mut [u8], wall: &WallSet, x: usize, y: usize) {
+    const POSITIONS: [(usize, usize); 9] = [
+        (0, 0),
+        (32, 16),
+        (72, 32),
+        (96, 48),
+        (208, 0),
+        (168, 16),
+        (144, 32),
+        (128, 48),
+        (112, 56),
+    ];
+    const COMPONENTS: [usize; 9] = [0, 1, 2, 3, 4, 5, 6, 7, 11];
+
+    for (&component, &(component_x, component_y)) in COMPONENTS.iter().zip(&POSITIONS) {
+        let (width, height) = WALL_COMPONENT_DIMENSIONS[component];
+        let pixels = &wall.components[component];
+        for row in 0..height {
+            let source = &pixels[row * width..(row + 1) * width];
+            let destination = (y + component_y + row) * WIDTH as usize + x + component_x;
+            frame[destination..destination + width].copy_from_slice(source);
+        }
     }
 }
 
@@ -377,7 +438,75 @@ fn decode_monsters(data: &[u8]) -> Result<Vec<Vec<u8>>, String> {
 }
 
 fn decode_monster(compressed: &[u8]) -> Result<Vec<u8>, String> {
-    let mut packed = Vec::with_capacity(2496);
+    let packed = decode_rle(compressed, 2496, "MONPIX.DTA image")?;
+    Ok(unpack_image(&packed, 104, 96))
+}
+
+const WALL_COMPONENT_DIMENSIONS: [(usize, usize); 12] = [
+    (32, 128),
+    (40, 96),
+    (24, 64),
+    (16, 32),
+    (32, 128),
+    (40, 96),
+    (24, 64),
+    (16, 32),
+    (176, 96),
+    (96, 64),
+    (48, 32),
+    (16, 16),
+];
+
+fn decode_wall_sets(data: &[u8]) -> Result<Vec<WallSet>, String> {
+    let index_bytes = read_u16(data, 0)? as usize;
+    if index_bytes == 0 || !index_bytes.is_multiple_of(4) {
+        return Err("WALLPIX.DTA has an invalid index size".into());
+    }
+    let object_data_start = 2 + index_bytes;
+    if object_data_start > data.len() {
+        return Err("WALLPIX.DTA index extends past the end of the file".into());
+    }
+
+    (0..index_bytes / 4)
+        .map(|index| {
+            let offset = read_u32(data, 2 + index * 4)? as usize;
+            let record_start = object_data_start
+                .checked_add(offset)
+                .ok_or("WALLPIX.DTA record offset overflow")?;
+            let compressed_size = read_u16(data, record_start)? as usize;
+            let payload_start = record_start + 2;
+            let payload_end = payload_start
+                .checked_add(compressed_size)
+                .ok_or("WALLPIX.DTA record size overflow")?;
+            let payload = data
+                .get(payload_start..payload_end)
+                .ok_or("WALLPIX.DTA record extends past the end of the file")?;
+            decode_wall_set(payload)
+        })
+        .collect()
+}
+
+fn decode_wall_set(compressed: &[u8]) -> Result<WallSet, String> {
+    let packed = decode_rle(compressed, 11_200, "WALLPIX.DTA wall set")?;
+    let mut offset = 0;
+    let components = WALL_COMPONENT_DIMENSIONS
+        .iter()
+        .map(|&(width, height)| {
+            let size = width * height / 4;
+            let component = unpack_image(&packed[offset..offset + size], width, height);
+            offset += size;
+            component
+        })
+        .collect();
+    Ok(WallSet { components })
+}
+
+fn decode_rle(
+    compressed: &[u8],
+    expected_size: usize,
+    description: &str,
+) -> Result<Vec<u8>, String> {
+    let mut packed = Vec::with_capacity(expected_size);
     let mut position = 0;
     while position < compressed.len() {
         let value = compressed[position];
@@ -385,42 +514,45 @@ fn decode_monster(compressed: &[u8]) -> Result<Vec<u8>, String> {
         if value == 0x7b {
             let run = compressed
                 .get(position..position + 2)
-                .ok_or("truncated MONPIX.DTA RLE run")?;
+                .ok_or_else(|| format!("truncated {description} RLE run"))?;
             packed.extend(std::iter::repeat_n(run[1], run[0] as usize + 1));
             position += 2;
         } else {
             packed.push(value);
         }
     }
-    if packed.len() != 2496 {
+    if packed.len() != expected_size {
         return Err(format!(
-            "MONPIX.DTA image decoded to {} bytes instead of 2496",
-            packed.len()
+            "{description} decoded to {} bytes instead of {expected_size}",
+            packed.len(),
         ));
     }
+    Ok(packed)
+}
 
-    let mut pixels = vec![BLACK; 104 * 96];
-    for (stream_index, value) in packed.into_iter().enumerate() {
-        let byte_x = stream_index / 96;
-        let y = stream_index % 96;
+fn unpack_image(packed: &[u8], width: usize, height: usize) -> Vec<u8> {
+    let mut pixels = vec![BLACK; width * height];
+    for (stream_index, value) in packed.iter().copied().enumerate() {
+        let byte_x = stream_index / height;
+        let y = stream_index % height;
         for pixel in 0..4 {
-            pixels[y * 104 + byte_x * 4 + pixel] = (value >> (6 - pixel * 2)) & 3;
+            pixels[y * width + byte_x * 4 + pixel] = (value >> (6 - pixel * 2)) & 3;
         }
     }
-    Ok(pixels)
+    pixels
 }
 
 fn read_u16(data: &[u8], offset: usize) -> Result<u16, String> {
     let bytes = data
         .get(offset..offset + 2)
-        .ok_or("unexpected end of MONPIX.DTA")?;
+        .ok_or("unexpected end of graphics data")?;
     Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
 }
 
 fn read_u32(data: &[u8], offset: usize) -> Result<u32, String> {
     let bytes = data
         .get(offset..offset + 4)
-        .ok_or("unexpected end of MONPIX.DTA")?;
+        .ok_or("unexpected end of graphics data")?;
     Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
 }
 
@@ -722,13 +854,30 @@ mod tests {
     }
 
     #[test]
+    fn supplied_wall_file_decodes_all_component_sets() {
+        let data = fs::read("dos/WALLPIX.DTA").unwrap();
+        let walls = decode_wall_sets(&data).unwrap();
+
+        assert_eq!(walls.len(), 18);
+        for wall in walls {
+            assert_eq!(wall.components.len(), WALL_COMPONENT_DIMENSIONS.len());
+            for (component, &(width, height)) in
+                wall.components.iter().zip(&WALL_COMPONENT_DIMENSIONS)
+            {
+                assert_eq!(component.len(), width * height);
+                assert!(component.iter().all(|pixel| *pixel < 4));
+            }
+        }
+    }
+
+    #[test]
     fn malformed_monster_rle_is_rejected() {
         assert!(decode_monster(&[0x7b]).is_err());
     }
 
     #[test]
-    fn browser_menu_only_opens_monsters() {
-        let mut browser = AssetBrowser::new(vec![vec![BLACK; 104 * 96]]);
+    fn browser_menu_opens_monsters() {
+        let mut browser = test_browser();
 
         browser.key_pressed(&Key::Named(NamedKey::Enter));
         assert!(matches!(browser.page, BrowserPage::Menu));
@@ -740,7 +889,7 @@ mod tests {
 
     #[test]
     fn escape_returns_to_the_previous_browser_menu() {
-        let mut browser = AssetBrowser::new(vec![vec![BLACK; 104 * 96]]);
+        let mut browser = test_browser();
         browser.page = BrowserPage::Monsters;
 
         browser.key_pressed(&Key::Named(NamedKey::Escape));
@@ -765,12 +914,41 @@ mod tests {
 
     #[test]
     fn monster_browser_wraps_in_both_directions() {
-        let mut browser = AssetBrowser::new(vec![vec![BLACK; 104 * 96]; 2]);
+        let mut browser = AssetBrowser::new(vec![vec![BLACK; 104 * 96]; 2], vec![blank_wall_set()]);
         browser.page = BrowserPage::Monsters;
 
         browser.key_pressed(&Key::Named(NamedKey::ArrowLeft));
         assert_eq!(browser.monster, 1);
         browser.key_pressed(&Key::Named(NamedKey::ArrowRight));
         assert_eq!(browser.monster, 0);
+    }
+
+    #[test]
+    fn wall_browser_opens_and_wraps_in_both_directions() {
+        let mut browser = AssetBrowser::new(
+            vec![vec![BLACK; 104 * 96]],
+            vec![blank_wall_set(), blank_wall_set()],
+        );
+        browser.selection = 2;
+        browser.key_pressed(&Key::Named(NamedKey::Enter));
+        assert!(matches!(browser.page, BrowserPage::Walls));
+
+        browser.key_pressed(&Key::Named(NamedKey::ArrowLeft));
+        assert_eq!(browser.wall, 1);
+        browser.key_pressed(&Key::Named(NamedKey::ArrowRight));
+        assert_eq!(browser.wall, 0);
+    }
+
+    fn test_browser() -> AssetBrowser {
+        AssetBrowser::new(vec![vec![BLACK; 104 * 96]], vec![blank_wall_set()])
+    }
+
+    fn blank_wall_set() -> WallSet {
+        WallSet {
+            components: WALL_COMPONENT_DIMENSIONS
+                .iter()
+                .map(|&(width, height)| vec![BLACK; width * height])
+                .collect(),
+        }
     }
 }

@@ -623,6 +623,20 @@ components:
 The first eight pieces form paired side-wall perspective shapes at four depths;
 the final four are front-facing wall pieces at decreasing depths. Rendering
 positions are runtime knowledge and are not included as metadata in the file.
+The following canonical positions within the 240×128 maze viewport are
+corroborated by ScummVM's MM1 renderer:
+
+| Depth | Left `(x, y)` | Right `(x, y)` | Front `(x, y)` |
+| ---: | ---: | ---: | ---: |
+| 0 (near) | `(0, 0)` | `(208, 0)` | `(32, 16)` |
+| 1 | `(32, 16)` | `(168, 16)` | `(72, 32)` |
+| 2 | `(72, 32)` | `(144, 32)` | `(96, 48)` |
+| 3 (far) | `(96, 48)` | `(128, 48)` | `(112, 56)` |
+
+The native asset browser previews each set as a representative corridor using
+all eight side pieces and the farthest front piece. The other front pieces are
+mutually exclusive alternatives selected by actual map geometry, so drawing all
+twelve components at once would not represent a valid player view.
 
 ## Graphics adapters
 

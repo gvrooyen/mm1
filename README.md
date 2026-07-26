@@ -96,10 +96,12 @@ cargo run -- --browse
 ```
 
 The browser's arrow-key-driven top-level menu contains maps, monsters, walls,
-and roster entries. Currently only `MONSTERS` opens: use the arrow keys to move
-through all 76 pictures decoded from `dos/MONPIX.DTA`. Press Escape to return to
-the previous menu, or Ctrl-C/Ctrl-Q to quit. The other menu entries are
-placeholders and do nothing when selected.
+and roster entries. `MONSTERS` shows all 76 pictures decoded from
+`dos/MONPIX.DTA`; `WALLS` shows representative perspective corridors for all 18
+environment sets decoded from `dos/WALLPIX.DTA`. Use the arrow keys to move
+through either collection. Press Escape to return to the previous menu, or
+Ctrl-C/Ctrl-Q to quit. The maps and roster entries are placeholders and do
+nothing when selected.
 
 The executable can report the current player view as versioned JSON without
 initializing a window, graphics device, or audio device. It writes and flushes
