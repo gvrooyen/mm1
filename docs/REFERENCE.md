@@ -570,6 +570,19 @@ returns. The bottom 16×5 center pixels consequently retain the preceding
 framebuffer contents. The native title animation deliberately also copies the
 bottom five rows on this final pass so that each transitioned image is complete.
 
+### `SCREEN2`–`SCREEN9` slideshow
+
+The `demo` routine displays `SCREEN2` through `SCREEN9` in numeric order. After
+each screen it calls the machine-calibrated `machdelay` routine with the same
+argument, `1000`; the text-heavy later screens do not receive a longer delay.
+Any detected key ends the current delay, but only Escape exits the slideshow.
+After `SCREEN9`, control returns to the alternating title screens.
+
+Because `machdelay` is a calibrated busy loop that repeatedly polls DOS for
+input, its argument has no exact machine-independent wall-clock conversion. The
+native engine uses five seconds per screen as a period-appropriate approximation
+for a 4.77 MHz IBM PC while retaining immediate keyboard advancement.
+
 ## Indexed graphics container
 
 `MONPIX.DTA` and `WALLPIX.DTA` share this container:

@@ -27,6 +27,9 @@ const TITLE_MUSIC_PATH: &str = "assets/intro.mp3";
 const TITLE_PICKUP_DURATION: Duration = Duration::from_micros(219_702);
 const TITLE_RING_INTERVAL: Duration = Duration::from_millis(100);
 const TITLE_RING_COUNT: u32 = 20;
+const SLIDESHOW_INTERVAL: Duration = Duration::from_secs(5);
+const FIRST_SCENE: usize = 2;
+const LAST_SCENE: usize = 9;
 
 const BLACK: u8 = 0;
 const CYAN: u8 = 1;
@@ -635,7 +638,7 @@ struct GameWindow {
     window: Option<Arc<Window>>,
     pixels: Option<Pixels<'static>>,
     animation: TitleAnimation,
-    next_ring: Instant,
+    next_update: Instant,
     _title_music: Option<TitleMusic>,
 }
 
@@ -645,9 +648,34 @@ impl GameWindow {
             window: None,
             pixels: None,
             animation,
-            next_ring: Instant::now() + TITLE_RING_INTERVAL,
+            next_update: Instant::now() + TITLE_RING_INTERVAL,
             _title_music: title_music,
         }
+    }
+
+    fn key_pressed(&mut self, key: &Key) -> bool {
+        if key == &Key::Named(NamedKey::Escape) {
+            return true;
+        }
+
+        if key == &Key::Character(" ".into()) {
+            if self.animation.in_slideshow() {
+                self.animation.advance_slideshow();
+            } else {
+                self.animation.start_slideshow();
+            }
+            self.next_update = Instant::now()
+                + if self.animation.in_slideshow() {
+                    SLIDESHOW_INTERVAL
+                } else {
+                    TITLE_RING_INTERVAL
+                };
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
+
+        false
     }
 }
 
@@ -675,7 +703,7 @@ impl ApplicationHandler for GameWindow {
         window.request_redraw();
         self.pixels = Some(pixels);
         self.window = Some(window);
-        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_ring));
+        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_update));
     }
 
     fn window_event(
@@ -691,7 +719,9 @@ impl ApplicationHandler for GameWindow {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                event_loop.exit();
+                if self.key_pressed(&event.logical_key) {
+                    event_loop.exit();
+                }
             }
             WindowEvent::Resized(PhysicalSize { width, height }) if width > 0 && height > 0 => {
                 if let Err(error) = pixels.resize_surface(width, height) {
@@ -712,37 +742,48 @@ impl ApplicationHandler for GameWindow {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
-        if now >= self.next_ring {
-            self.animation.advance();
-            self.next_ring = now + TITLE_RING_INTERVAL;
+        if now >= self.next_update {
+            if self.animation.in_slideshow() {
+                self.animation.advance_slideshow();
+            } else {
+                self.animation.advance_title();
+            }
+            self.next_update = now
+                + if self.animation.in_slideshow() {
+                    SLIDESHOW_INTERVAL
+                } else {
+                    TITLE_RING_INTERVAL
+                };
             if let Some(window) = &self.window {
                 window.request_redraw();
             }
         }
-        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_ring));
+        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_update));
     }
 }
 
 struct TitleAnimation {
-    images: [Vec<u8>; 2],
+    images: Vec<Vec<u8>>,
     framebuffer: Vec<u8>,
     image: usize,
     ring: u32,
+    scene: Option<usize>,
 }
 
 impl TitleAnimation {
     fn load() -> Result<Self, Box<dyn Error>> {
-        let images = [
-            decode_screen(&fs::read("dos/SCREEN0")?)?,
-            decode_screen(&fs::read("dos/SCREEN1")?)?,
-        ];
+        let mut images = Vec::new();
+        for index in 0..=LAST_SCENE {
+            images.push(decode_screen(&fs::read(format!("dos/SCREEN{index}"))?)?);
+        }
         let mut animation = Self {
             images,
             framebuffer: vec![BLACK; (WIDTH * HEIGHT) as usize],
             image: 0,
             ring: 0,
+            scene: None,
         };
-        animation.advance();
+        animation.advance_title();
         Ok(animation)
     }
 
@@ -750,7 +791,32 @@ impl TitleAnimation {
         &self.framebuffer
     }
 
-    fn advance(&mut self) {
+    fn in_slideshow(&self) -> bool {
+        self.scene.is_some()
+    }
+
+    fn start_slideshow(&mut self) {
+        self.scene = Some(FIRST_SCENE);
+        self.framebuffer.copy_from_slice(&self.images[FIRST_SCENE]);
+    }
+
+    fn advance_slideshow(&mut self) {
+        let Some(scene) = self.scene else {
+            return;
+        };
+        if scene < LAST_SCENE {
+            let scene = scene + 1;
+            self.scene = Some(scene);
+            self.framebuffer.copy_from_slice(&self.images[scene]);
+        } else {
+            self.scene = None;
+            self.image = 0;
+            self.ring = 0;
+            self.advance_title();
+        }
+    }
+
+    fn advance_title(&mut self) {
         let inset_x = self.ring * 8;
         let inset_y = self.ring * 5;
         let width = WIDTH - inset_x * 2;
@@ -791,7 +857,7 @@ impl TitleAnimation {
         self.ring += 1;
         if self.ring == TITLE_RING_COUNT {
             self.ring = 0;
-            self.image = (self.image + 1) % self.images.len();
+            self.image = (self.image + 1) % FIRST_SCENE;
         }
     }
 }
@@ -897,16 +963,44 @@ mod tests {
         let mut animation = TitleAnimation::load().unwrap();
 
         for _ in 1..TITLE_RING_COUNT {
-            animation.advance();
+            animation.advance_title();
         }
         assert_eq!(animation.image, 1);
         assert_eq!(animation.framebuffer, animation.images[0]);
 
         for _ in 0..TITLE_RING_COUNT {
-            animation.advance();
+            animation.advance_title();
         }
         assert_eq!(animation.image, 0);
         assert_eq!(animation.framebuffer, animation.images[1]);
+    }
+
+    #[test]
+    fn slideshow_shows_screens_two_through_nine_then_returns_to_title() {
+        let mut animation = TitleAnimation::load().unwrap();
+
+        animation.start_slideshow();
+        for scene in FIRST_SCENE..=LAST_SCENE {
+            assert_eq!(animation.scene, Some(scene));
+            assert_eq!(animation.framebuffer, animation.images[scene]);
+            animation.advance_slideshow();
+        }
+
+        assert!(!animation.in_slideshow());
+        assert_eq!(animation.image, 0);
+    }
+
+    #[test]
+    fn title_keys_start_and_advance_the_slideshow_or_exit() {
+        let mut window = GameWindow::new(TitleAnimation::load().unwrap(), None);
+
+        assert!(!window.key_pressed(&Key::Character(" ".into())));
+        assert_eq!(window.animation.scene, Some(FIRST_SCENE));
+        assert!(!window.key_pressed(&Key::Character(" ".into())));
+        assert_eq!(window.animation.scene, Some(FIRST_SCENE + 1));
+        assert!(!window.key_pressed(&Key::Character("x".into())));
+        assert_eq!(window.animation.scene, Some(FIRST_SCENE + 1));
+        assert!(window.key_pressed(&Key::Named(NamedKey::Escape)));
     }
 
     #[test]

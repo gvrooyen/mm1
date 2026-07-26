@@ -52,15 +52,18 @@ The detailed findings are recorded in
 
 The project is currently in the reverse-engineering and early implementation
 phase. The major binary containers are understood well enough to build lossless
-readers. The Rust executable decodes the original `SCREEN0` and `SCREEN1`
-artwork into a palette-indexed 320x200 framebuffer and alternates between them
-with the DOS release's outside-in rectangular reveal in a 960x600 window using
-`pixels` and `winit`. The original PC-speaker title sequence is rendered to MP3
-and played through `rodio`.
+readers. The Rust executable decodes the original `SCREEN0` through `SCREEN9`
+artwork into a palette-indexed 320x200 framebuffer. It alternates between the
+first two title images with the DOS release's outside-in rectangular reveal in
+a 960x600 window using `pixels` and `winit`. Press Space to show or advance the
+`SCREEN2` through `SCREEN9` slideshow; each image advances automatically after
+five seconds. The original PC-speaker title sequence is rendered to MP3 and
+played through `rodio`.
 
-Pressing any key exits the executable; closing the graphical window exits it as
-well. If an audio device or the title music is unavailable, the executable
-reports the problem on stderr and continues without audio.
+Pressing Escape takes the not-yet-implemented start-game path and exits the
+executable; closing the graphical window exits it as well. If an audio device
+or the title music is unavailable, the executable reports the problem on
+stderr and continues without audio.
 
 Important remaining research includes:
 
