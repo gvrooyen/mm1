@@ -124,6 +124,15 @@ cargo run -- --headless
 cargo run -- --headless --commands start,toggle:1,toggle:2,confirm,forward,left
 ```
 
+For an interactive agent session, pass `--interactive`. The process emits the
+initial view as newline-delimited JSON (NDJSON), then reads one command per line
+from stdin and emits the resulting view as another NDJSON line. Empty input
+lines are ignored, and EOF ends the session:
+
+```sh
+printf 'start\ntoggle:1\nconfirm\n' | cargo run --quiet -- --headless --interactive
+```
+
 Commands include `start`, `toggle:N`, `confirm`, `forward`, `back`, `left`,
 `right`, `unlock`, `bash`, `choose:N`, `food`, `drink`, `tip`, `rumor`, `gather`,
 `restore`, `realign`, `donate`, `train`, `yes`, `no`, and `escape`.
@@ -133,11 +142,12 @@ the active party member are exposed in the schema-v2 combat object. The subset
 decodes monster statistics and rewards from `MM.EXE`, but simplifies initiative,
 physical attacks, fleeing, conditions, and treasure handling.
 
-Each JSON
-view lists the commands valid on its current screen. Output uses schema version
-2 and includes options, party resources, messages, position/facing, and
-directional wall/exits. With no commands it remains the title view. No game
-state or DOS asset is ever written.
+Each JSON view lists the commands valid on its current screen. Output uses
+schema version 2 and includes options, party resources, messages,
+position/facing, and directional wall/exits. Non-interactive headless mode
+always outputs one JSON document; interactive mode outputs one document per
+NDJSON line. With no commands it remains the title view. No game state or DOS
+asset is ever written.
 
 Run the development checks with:
 

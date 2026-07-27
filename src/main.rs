@@ -5,7 +5,7 @@ use std::{
     env,
     error::Error,
     fs::{self, File},
-    io::{self, Write},
+    io::{self, BufRead, Write},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -50,13 +50,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let args = parse_args()?;
 
     if args.headless {
-        let mut game = game::Game::load()?;
-        for command in &args.commands {
-            game.command(command);
-        }
-        println!("{}", serde_json::to_string_pretty(&game.view())?);
-        io::stdout().flush()?;
-        return Ok(());
+        return run_headless(&args.commands, args.interactive);
     }
 
     if args.browse {
@@ -69,6 +63,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 #[derive(Default)]
 struct Args {
     headless: bool,
+    interactive: bool,
     browse: bool,
     commands: Vec<String>,
 }
@@ -80,6 +75,7 @@ fn parse_args() -> Result<Args, String> {
     while let Some(arg) = input.next() {
         match arg.as_str() {
             "--headless" => args.headless = true,
+            "--interactive" => args.interactive = true,
             "--browse" => args.browse = true,
             "--commands" => {
                 let value = input.next().ok_or("--commands requires a value")?;
@@ -92,7 +88,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "-h" | "--help" => {
                 println!(
-                    "Usage: mm1 [--headless [--commands LIST] | --browse]\n\n  --headless  Print the final player view as JSON\n  --commands  Repeatable comma-separated session commands\n  --browse    Browse original game assets"
+                    "Usage: mm1 [--headless [--interactive] [--commands LIST] | --browse]\n\n  --headless     Print the player view as JSON\n  --interactive  Read one command per stdin line and emit views as NDJSON\n  --commands     Repeatable comma-separated session commands\n  --browse       Browse original game assets"
                 );
                 std::process::exit(0);
             }
@@ -106,8 +102,55 @@ fn parse_args() -> Result<Args, String> {
     if !args.headless && !args.commands.is_empty() {
         return Err("--commands requires --headless".into());
     }
+    if args.interactive && !args.headless {
+        return Err("--interactive requires --headless".into());
+    }
 
     Ok(args)
+}
+
+fn run_headless(commands: &[String], interactive: bool) -> Result<(), Box<dyn Error>> {
+    let stdin = io::stdin();
+    let stdout = io::stdout();
+    run_headless_io(commands, interactive, stdin.lock(), stdout.lock())
+}
+
+fn run_headless_io<R: BufRead, W: Write>(
+    commands: &[String],
+    interactive: bool,
+    input: R,
+    mut output: W,
+) -> Result<(), Box<dyn Error>> {
+    let mut game = game::Game::load()?;
+    for command in commands {
+        game.command(command);
+    }
+
+    if !interactive {
+        serde_json::to_writer_pretty(&mut output, &game.view())?;
+        writeln!(output)?;
+        output.flush()?;
+        return Ok(());
+    }
+
+    write_ndjson_view(&mut output, &game)?;
+    for line in input.lines() {
+        let line = line?;
+        let command = line.trim();
+        if command.is_empty() {
+            continue;
+        }
+        game.command(command);
+        write_ndjson_view(&mut output, &game)?;
+    }
+    Ok(())
+}
+
+fn write_ndjson_view(output: &mut impl Write, game: &game::Game) -> Result<(), Box<dyn Error>> {
+    serde_json::to_writer(&mut *output, &game.view())?;
+    writeln!(output)?;
+    output.flush()?;
+    Ok(())
 }
 
 fn run_windowed() -> Result<(), Box<dyn Error>> {
@@ -1456,6 +1499,25 @@ mod tests {
         let value = serde_json::to_value(game.view()).unwrap();
         assert_eq!(value["schema_version"], 2);
         assert_eq!(value["kind"], "title");
+    }
+
+    #[test]
+    fn interactive_headless_emits_one_json_view_per_command() {
+        let input = b"start\n\ntoggle:1\nconfirm\n";
+        let mut output = Vec::new();
+
+        run_headless_io(&[], true, &input[..], &mut output).unwrap();
+
+        let views: Vec<serde_json::Value> = String::from_utf8(output)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(views.len(), 4);
+        assert_eq!(views[0]["kind"], "title");
+        assert_eq!(views[1]["kind"], "inn");
+        assert_eq!(views[2]["kind"], "inn");
+        assert_eq!(views[3]["kind"], "town");
     }
 
     #[test]
