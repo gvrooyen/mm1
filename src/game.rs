@@ -72,6 +72,7 @@ pub enum Screen {
     Encounter,
     Combat,
     Treasure,
+    Character,
 }
 
 #[derive(Serialize)]
@@ -104,6 +105,13 @@ pub struct ExitView {
     pub passable: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PerspectiveCell {
+    pub left: u8,
+    pub front: u8,
+    pub right: u8,
+}
+
 #[derive(Serialize)]
 pub struct PlayerView<'a> {
     pub schema_version: u32,
@@ -122,6 +130,7 @@ pub struct PlayerView<'a> {
 pub struct EnemyView<'a> {
     pub slot: usize,
     pub name: &'a str,
+    pub image: u8,
     pub hp: u16,
     pub max_hp: u16,
     pub alive: bool,
@@ -146,6 +155,7 @@ struct ItemDef {
 #[derive(Clone, Debug)]
 struct MonsterDef {
     name: String,
+    image: u8,
     hp: u8,
     armor_class: u8,
     max_damage: u8,
@@ -259,6 +269,7 @@ impl Game {
             Screen::Encounter => "Encounter",
             Screen::Combat => "Combat",
             Screen::Treasure => "Treasure",
+            Screen::Character => "Character",
         };
         let options = match self.screen {
             Screen::Title => vec!["start".into()],
@@ -338,6 +349,7 @@ impl Game {
                 "flee".into(),
             ],
             Screen::Treasure => vec!["open".into(), "leave".into()],
+            Screen::Character => vec!["escape".into()],
             _ => vec!["escape".into()],
         };
         PlayerView {
@@ -406,6 +418,7 @@ impl Game {
                     .map(|(index, enemy)| EnemyView {
                         slot: index + 1,
                         name: &self.monsters[enemy.definition].name,
+                        image: self.monsters[enemy.definition].image,
                         hp: enemy.hp,
                         max_hp: enemy.max_hp,
                         alive: enemy.hp != 0,
@@ -414,6 +427,32 @@ impl Game {
                 treasure_gold: combat.treasure_gold,
             }),
         }
+    }
+
+    /// Describes the visible Sorpigal corridor without exposing windowing or
+    /// graphics-asset types to game state.
+    pub fn perspective(&self) -> Vec<PerspectiveCell> {
+        let mut cells = Vec::with_capacity(4);
+        let (mut x, mut y) = (self.x, self.y);
+        for _ in 0..4 {
+            let wall = |direction: Facing| {
+                (self.maze[y as usize * 16 + x as usize] >> direction.bits()) & 3
+            };
+            let front = wall(self.facing);
+            cells.push(PerspectiveCell {
+                left: wall(self.facing.left()),
+                front,
+                right: wall(self.facing.right()),
+            });
+            if front != 0 {
+                break;
+            }
+            let Some(next) = self.facing.shift(x, y) else {
+                break;
+            };
+            (x, y) = next;
+        }
+        cells
     }
     pub fn command(&mut self, raw: &str) {
         let cmd = raw.trim().to_ascii_lowercase();
@@ -478,6 +517,23 @@ impl Game {
             return;
         }
         if let Some(n) = cmd
+            .strip_prefix("view:")
+            .and_then(|s| s.parse::<usize>().ok())
+            && self.screen == Screen::Town
+            && n > 0
+            && n <= self.party.len()
+        {
+            self.current = n - 1;
+            self.screen = Screen::Character;
+            return;
+        }
+        if self.screen == Screen::Character {
+            if cmd == "escape" {
+                self.screen = Screen::Town;
+            }
+            return;
+        }
+        if let Some(n) = cmd
             .strip_prefix("choose:")
             .and_then(|s| s.parse::<usize>().ok())
         {
@@ -539,6 +595,10 @@ impl Game {
     }
     fn wall(&self, d: Facing) -> u8 {
         (self.maze[self.y as usize * 16 + self.x as usize] >> d.bits()) & 3
+    }
+
+    pub fn current_character(&self) -> Option<&Character> {
+        self.party.get(self.current)
     }
     fn walk(&mut self, d: Facing, backwards: bool) {
         if !self.can_move(d) || (backwards && self.wall(d) != 0) {
@@ -1337,6 +1397,7 @@ fn decode_monsters(executable: &[u8]) -> Result<Vec<MonsterDef>, String> {
                     .unwrap()
                     .trim_end()
                     .to_owned(),
+                image: record[30],
                 hp: record[17],
                 armor_class: record[18],
                 max_damage: record[19],
@@ -1454,6 +1515,34 @@ mod tests {
         assert_eq!(g.screen, Screen::Town);
         g.command("right");
         assert_eq!(g.screen, Screen::Inn);
+    }
+
+    #[test]
+    fn perspective_follows_the_maze_until_the_first_front_wall() {
+        let mut g = Game::load().unwrap();
+        g.x = 8;
+        g.y = 3;
+        g.facing = Facing::North;
+
+        let perspective = g.perspective();
+
+        assert!(!perspective.is_empty());
+        assert!(perspective.len() <= 4);
+        assert!(perspective.last().is_some_and(|cell| cell.front != 0));
+    }
+
+    #[test]
+    fn party_members_can_be_opened_from_town_and_closed() {
+        let mut g = Game::load().unwrap();
+        g.command("start");
+        g.command("toggle:1");
+        g.command("confirm");
+
+        g.command("view:1");
+        assert_eq!(g.screen, Screen::Character);
+        assert_eq!(g.current_character().unwrap().name, "CRAG THE HACK");
+        g.command("escape");
+        assert_eq!(g.screen, Screen::Town);
     }
 
     #[test]
@@ -1611,6 +1700,7 @@ mod tests {
             Screen::Encounter,
             Screen::Combat,
             Screen::Treasure,
+            Screen::Character,
         ] {
             g.screen = s;
             serde_json::to_string(&g.view()).unwrap();

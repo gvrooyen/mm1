@@ -53,9 +53,13 @@ The detailed findings are recorded in
 The project now includes a native playable Sorpigal slice. Space or Enter opens
 the inn, number keys select up to six supplied roster characters, Enter starts
 town exploration, and arrow keys move and turn through map 0's original walls.
-Town services and special squares are player-facing. Sorpigal encounters use a
-small deterministic native combat subset; trap damage and destinations outside
-Sorpigal remain explicitly unimplemented. The
+Exploration renders the original perspective wall, door, and special-wall
+components at four depths, with the command panel, party roster, and messages
+composed in the logical 320x200 framebuffer. Number keys open character views.
+Town services and special squares are player-facing, and encounters display the
+monster artwork selected by the original monster record. Sorpigal encounters
+use a small deterministic native combat subset; trap damage and destinations
+outside Sorpigal remain explicitly unimplemented. The
 executable also decodes the original `SCREEN0` through
 `SCREEN9` artwork into a palette-indexed 320x200 framebuffer. It alternates
 between the first two title images with the DOS release's outside-in rectangular

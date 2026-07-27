@@ -918,12 +918,19 @@ struct GameWindow {
     _title_music: Option<TitleMusic>,
     game: game::Game,
     game_framebuffer: Vec<u8>,
+    walls: Vec<WallSet>,
+    monsters: Vec<Vec<u8>>,
     modifiers: ModifiersState,
     blacksmith_number_action: &'static str,
 }
 
 impl GameWindow {
     fn new(animation: TitleAnimation, title_music: Option<TitleMusic>) -> Self {
+        let walls = decode_wall_sets(&fs::read("dos/WALLPIX.DTA").expect("could not load walls"))
+            .expect("could not decode walls");
+        let monsters =
+            decode_monsters(&fs::read("dos/MONPIX.DTA").expect("could not load monsters"))
+                .expect("could not decode monsters");
         Self {
             window: None,
             pixels: None,
@@ -932,6 +939,8 @@ impl GameWindow {
             _title_music: title_music,
             game: game::Game::load().expect("could not load game data"),
             game_framebuffer: vec![BLACK; (WIDTH * HEIGHT) as usize],
+            walls,
+            monsters,
             modifiers: ModifiersState::empty(),
             blacksmith_number_action: "buy:",
         }
@@ -956,6 +965,7 @@ impl GameWindow {
                 Key::Character(c) if c.len() == 1 && c.as_bytes()[0].is_ascii_digit() => {
                     let command = match self.game.screen {
                         game::Screen::Inn => "toggle:",
+                        game::Screen::Town => "view:",
                         game::Screen::Blacksmith => self.blacksmith_number_action,
                         game::Screen::Combat => "attack:",
                         _ => "choose:",
@@ -1058,66 +1068,43 @@ impl GameWindow {
     fn redraw_game(&mut self) {
         self.game_framebuffer.fill(BLACK);
         let view = self.game.view();
-        draw_dos_text(&mut self.game_framebuffer, 8, 8, view.title, WHITE);
-        let mut y = 22;
-        if let (Some((x, map_y)), Some(facing)) = (view.position, view.facing) {
-            draw_dos_text(
-                &mut self.game_framebuffer,
-                8,
-                y,
-                &format!("POSITION {x},{map_y}  FACING {facing:?}"),
-                WHITE,
-            );
-            y += 12;
-        }
-        if !view.exits.is_empty() {
-            let exits = view
-                .exits
-                .iter()
-                .map(|exit| {
-                    format!(
-                        "{:?}:{}{}",
-                        exit.direction,
-                        exit.wall_type,
-                        if exit.passable { "+" } else { "-" }
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(" ");
-            draw_dos_text(&mut self.game_framebuffer, 8, y, &exits, CYAN);
-            y += 12;
-        }
-        if let Some(combat) = &view.combat {
-            draw_dos_text(
-                &mut self.game_framebuffer,
-                8,
-                y,
-                &format!(
-                    "ROUND {}  ACTIVE PARTY {}",
-                    combat.round,
-                    combat.active_party_member.unwrap_or(0)
-                ),
-                WHITE,
-            );
-            y += 11;
-            for enemy in combat.enemies.iter().take(5) {
-                draw_dos_text(
-                    &mut self.game_framebuffer,
-                    8,
-                    y,
-                    &format!(
-                        "{} {} HP {}/{}",
-                        enemy.slot, enemy.name, enemy.hp, enemy.max_hp
-                    ),
-                    CYAN,
-                );
-                y += 10;
+        if matches!(
+            self.game.screen,
+            game::Screen::Town
+                | game::Screen::Encounter
+                | game::Screen::Combat
+                | game::Screen::Treasure
+        ) {
+            draw_exploration(&mut self.game_framebuffer, &self.game, &self.walls[..3]);
+            if let Some(combat) = &view.combat {
+                if let Some(enemy) = combat.enemies.iter().find(|enemy| enemy.alive)
+                    && let Some(image) = self.monsters.get(enemy.image as usize)
+                {
+                    blit_image(&mut self.game_framebuffer, image, 104, 96, 68, 16);
+                }
+                draw_combat_panel(&mut self.game_framebuffer, combat, self.game.screen);
+            } else {
+                draw_command_panel(&mut self.game_framebuffer);
             }
+            draw_party(&mut self.game_framebuffer, &view.party);
+            draw_message(&mut self.game_framebuffer, view.message);
+            return;
         }
+        if self.game.screen == game::Screen::Character {
+            if let Some(character) = self.game.current_character()
+                && let Some(member) = view.party.iter().find(|member| member.is_current)
+            {
+                draw_character_sheet(&mut self.game_framebuffer, character, member);
+            }
+            return;
+        }
+
+        draw_dos_text(&mut self.game_framebuffer, 8, 8, view.title, WHITE);
+        let mut y = 24;
         let option_limit = if self.game.screen == game::Screen::Blacksmith {
-            12
+            11
         } else {
-            7
+            8
         };
         for option in view.options.iter().take(option_limit) {
             draw_dos_text(&mut self.game_framebuffer, 8, y, option, CYAN);
@@ -1156,6 +1143,195 @@ impl GameWindow {
             );
             y += 10;
         }
+    }
+}
+
+fn draw_exploration(frame: &mut [u8], game: &game::Game, wall_sets: &[WallSet]) {
+    const LEFT: [(usize, usize); 4] = [(0, 0), (32, 16), (72, 32), (96, 48)];
+    const RIGHT: [(usize, usize); 4] = [(208, 0), (168, 16), (144, 32), (128, 48)];
+    const FRONT: [(usize, usize); 4] = [(32, 16), (72, 32), (96, 48), (112, 56)];
+
+    for (depth, cell) in game.perspective().iter().enumerate() {
+        if cell.left != 0
+            && let Some(wall) = wall_sets.get(cell.left as usize - 1)
+        {
+            blit_component(frame, wall, depth, LEFT[depth]);
+        }
+        if cell.right != 0
+            && let Some(wall) = wall_sets.get(cell.right as usize - 1)
+        {
+            blit_component(frame, wall, depth + 4, RIGHT[depth]);
+        }
+        if cell.front != 0 {
+            if let Some(wall) = wall_sets.get(cell.front as usize - 1) {
+                blit_component(frame, wall, depth + 8, FRONT[depth]);
+            }
+            break;
+        }
+    }
+    fill_rect(frame, 240, 0, 1, 128, CYAN);
+    fill_rect(frame, 0, 128, WIDTH, 1, CYAN);
+}
+
+fn blit_component(frame: &mut [u8], wall: &WallSet, component: usize, position: (usize, usize)) {
+    let (width, height) = WALL_COMPONENT_DIMENSIONS[component];
+    blit_image(
+        frame,
+        &wall.components[component],
+        width,
+        height,
+        position.0,
+        position.1,
+    );
+}
+
+fn blit_image(frame: &mut [u8], image: &[u8], width: usize, height: usize, x: usize, y: usize) {
+    for row in 0..height.min(HEIGHT as usize - y) {
+        let source = &image[row * width..(row + 1) * width];
+        let start = (y + row) * WIDTH as usize + x;
+        let visible = width.min(WIDTH as usize - x);
+        frame[start..start + visible].copy_from_slice(&source[..visible]);
+    }
+}
+
+fn draw_command_panel(frame: &mut [u8]) {
+    draw_dos_text(frame, 248, 2, "COMMANDS", WHITE);
+    for &(y, command) in &[
+        (18, "^ FORWARD"),
+        (31, "V BACK"),
+        (44, "< TURN"),
+        (54, "  LEFT"),
+        (67, "> TURN"),
+        (77, "  RIGHT"),
+        (90, "U UNLOCK"),
+        (103, "B BASH"),
+        (116, "1-6 VIEW"),
+    ] {
+        draw_dos_text(frame, 248, y, command, WHITE);
+    }
+}
+
+fn draw_character_sheet(frame: &mut [u8], character: &Character, member: &game::PartyMember<'_>) {
+    let class = [
+        "", "KNIGHT", "PALADIN", "ARCHER", "CLERIC", "SORCERER", "ROBBER",
+    ]
+    .get(character.class as usize)
+    .copied()
+    .unwrap_or("UNKNOWN");
+    draw_dos_text(frame, 8, 4, &character.name, WHITE);
+    draw_dos_text(frame, 160, 4, class, WHITE);
+    for (row, line) in [
+        format!(
+            "INT={:2}  LEVEL={:2}  AGE={:2}",
+            character.intellect.current, member.level, character.age
+        ),
+        format!(
+            "MGT={:2}  HP={:3}/{:3}",
+            character.might.current, member.hp, member.max_hp
+        ),
+        format!(
+            "PER={:2}  SP={:3}/{:3}",
+            character.personality.current,
+            character.current_spell_points,
+            character.maximum_spell_points
+        ),
+        format!(
+            "END={:2}  AC={:2}",
+            character.endurance.current, character.armor_class.current
+        ),
+        format!("SPD={:2}  GOLD={}", character.speed.current, member.gold),
+        format!("ACY={:2}  GEMS={}", character.accuracy.current, member.gems),
+        format!("LCK={:2}  FOOD={}", character.luck.current, member.food),
+        format!("COND={:02X} XP={}", member.condition, member.experience),
+    ]
+    .iter()
+    .enumerate()
+    {
+        draw_dos_text(frame, 8, 18 + row as u32 * 10, line, WHITE);
+    }
+    fill_rect(frame, 0, 102, WIDTH, 1, CYAN);
+    draw_dos_text(frame, 8, 108, "BACKPACK", WHITE);
+    if member.backpack.is_empty() {
+        draw_dos_text(frame, 8, 120, "EMPTY", CYAN);
+    } else {
+        for (row, item) in member.backpack.iter().enumerate() {
+            draw_dos_text(
+                frame,
+                8,
+                120 + row as u32 * 10,
+                &format!("{}) {}  CHG {}", item.slot, item.name, item.charges),
+                CYAN,
+            );
+        }
+    }
+    draw_dos_text(frame, 176, 188, "ESC TO RETURN", WHITE);
+}
+
+fn draw_combat_panel(frame: &mut [u8], combat: &game::CombatView<'_>, screen: game::Screen) {
+    let heading = if screen == game::Screen::Treasure {
+        "TREASURE"
+    } else {
+        "ENEMIES"
+    };
+    draw_dos_text(frame, 248, 2, heading, WHITE);
+    for (row, enemy) in combat
+        .enemies
+        .iter()
+        .filter(|enemy| enemy.alive)
+        .take(8)
+        .enumerate()
+    {
+        draw_dos_text(
+            frame,
+            248,
+            16 + row as u32 * 10,
+            &format!("{} {}", enemy.slot, enemy.name),
+            WHITE,
+        );
+    }
+    let options: &[&str] = match screen {
+        game::Screen::Encounter => &["ENTER", "F FLEE"],
+        game::Screen::Combat => &["1-9 ATK", "D DEFEND", "F FLEE"],
+        game::Screen::Treasure => &["O OPEN", "L LEAVE"],
+        _ => &[],
+    };
+    for (row, option) in options.iter().enumerate() {
+        draw_dos_text(frame, 248, 98 + row as u32 * 10, option, WHITE);
+    }
+}
+
+fn draw_party(frame: &mut [u8], party: &[game::PartyMember<'_>]) {
+    for (index, member) in party.iter().take(6).enumerate() {
+        let x = if index % 2 == 0 { 8 } else { 176 };
+        let y = 136 + (index / 2) as u32 * 10;
+        draw_dos_text(
+            frame,
+            x,
+            y,
+            &format!("{}) {}", index + 1, member.name),
+            if member.condition == 0 {
+                WHITE
+            } else {
+                MAGENTA
+            },
+        );
+    }
+}
+
+fn draw_message(frame: &mut [u8], message: &str) {
+    if message.is_empty() {
+        return;
+    }
+    fill_rect(frame, 0, 168, WIDTH, 32, BLACK);
+    fill_rect(frame, 0, 168, WIDTH, 1, CYAN);
+    for (row, line) in message.as_bytes().chunks(39).take(3).enumerate() {
+        draw_dos_text(
+            frame,
+            4,
+            172 + row as u32 * 9,
+            &String::from_utf8_lossy(line),
+            WHITE,
+        );
     }
 }
 
@@ -1437,6 +1613,9 @@ fn dos_glyph(character: char) -> [u8; 8] {
         ':' => [0x00, 0x30, 0x30, 0x00, 0x00, 0x30, 0x30, 0x00],
         '-' => [0x00, 0x00, 0x00, 0xfc, 0x00, 0x00, 0x00, 0x00],
         '/' => [0x06, 0x0c, 0x18, 0x30, 0x60, 0xc0, 0x80, 0x00],
+        '^' => [0x10, 0x38, 0x6c, 0xc6, 0x00, 0x00, 0x00, 0x00],
+        '<' => [0x0c, 0x18, 0x30, 0x60, 0x30, 0x18, 0x0c, 0x00],
+        '>' => [0x60, 0x30, 0x18, 0x0c, 0x18, 0x30, 0x60, 0x00],
         _ => [0; 8],
     }
 }

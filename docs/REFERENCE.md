@@ -56,7 +56,9 @@ than game input.
 `0x1B3F2`. Verified fields used by the native combat slice are the 15-byte
 space-padded name, HP at `+17`, armor class at `+18`, maximum damage at `+19`,
 attack count at `+20`, speed at `+21`, little-endian experience at `+22`, and
-loot flags at `+24`. This layout and the Sorpigal initial encounter parameters
+loot flags at `+24`. The zero-based `MONPIX.DTA` image index is at `+30`; the
+native encounter renderer uses that field directly. This layout and the
+Sorpigal initial encounter parameters
 (level floor 1, level cap 1, five-monster cap) are corroborated by ScummVM's
 MM1 `data/monsters.*`, `game/encounter.cpp`, and `maps/map00.cpp`.
 
