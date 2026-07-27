@@ -47,6 +47,18 @@ const PALETTE: [[u8; 4]; 4] = [
     [0xff, 0x55, 0xff, 0xff],
     [0xff, 0xff, 0xff, 0xff],
 ];
+const TITLE_EGA_PALETTE: [[u8; 4]; 4] = [
+    [0x00, 0x00, 0x00, 0xff],
+    [0x00, 0xaa, 0x00, 0xff],
+    [0xaa, 0x00, 0x00, 0xff],
+    [0xff, 0xff, 0xff, 0xff],
+];
+const GAME_EGA_PALETTE: [[u8; 4]; 4] = [
+    [0x00, 0x00, 0x00, 0xff],
+    [0xff, 0xff, 0x55, 0xff],
+    [0xaa, 0x55, 0x00, 0xff],
+    [0xff, 0xff, 0xff, 0xff],
+];
 
 fn main() -> Result<(), Box<dyn Error>> {
     let args = parse_args()?;
@@ -1002,6 +1014,7 @@ impl GameWindow {
                 Key::Character(c) if c.len() == 1 && c.as_bytes()[0].is_ascii_digit() => {
                     let command = match self.game.screen {
                         game::Screen::Inn => "toggle:",
+                        game::Screen::CreateCharacter => "choose:",
                         game::Screen::Town => "view:",
                         game::Screen::Blacksmith => self.game.blacksmith_number_action(),
                         game::Screen::Combat => "attack:",
@@ -1011,6 +1024,28 @@ impl GameWindow {
                     None
                 }
                 Key::Character(c) => match c.to_ascii_lowercase().as_str() {
+                    "c" if self.game.screen == game::Screen::Menu => Some("create"),
+                    "v" if self.game.screen == game::Screen::Menu => Some("view"),
+                    "m" if self.game.screen == game::Screen::Menu => Some("enter"),
+                    letter @ ("a" | "b" | "c" | "d" | "e" | "f")
+                        if self.game.screen == game::Screen::Roster =>
+                    {
+                        let index = letter.as_bytes()[0] - b'a' + 1;
+                        self.apply_command(&format!("view-roster:{index}"));
+                        None
+                    }
+                    letter @ ("a" | "b" | "c" | "d" | "e" | "f")
+                        if self.game.screen == game::Screen::Inn =>
+                    {
+                        let index = letter.as_bytes()[0] - b'a' + 1;
+                        if self.modifiers.control_key() {
+                            self.apply_command(&format!("toggle:{index}"));
+                        } else {
+                            self.apply_command(&format!("view-inn:{index}"));
+                        }
+                        None
+                    }
+                    "k" if self.game.screen == game::Screen::Inn => Some("escape"),
                     "f" if matches!(
                         self.game.screen,
                         game::Screen::Encounter | game::Screen::Combat
@@ -1053,11 +1088,10 @@ impl GameWindow {
             }
             return false;
         }
-        if key == &Key::Named(NamedKey::Escape) {
-            return true;
-        }
-
-        if key == &Key::Named(NamedKey::Space) || key == &Key::Named(NamedKey::Enter) {
+        if key == &Key::Named(NamedKey::Escape)
+            || key == &Key::Named(NamedKey::Space)
+            || key == &Key::Named(NamedKey::Enter)
+        {
             self.apply_command("start");
             self.redraw_game();
             if let Some(window) = &self.window {
@@ -1112,59 +1146,190 @@ impl GameWindow {
             return;
         }
         if self.game.screen == game::Screen::Character {
-            if let Some(character) = self.game.current_character()
-                && let Some(member) = view.party.iter().find(|member| member.is_current)
-            {
-                draw_character_sheet(&mut self.game_framebuffer, character, member);
+            if let Some(character) = self.game.current_character() {
+                draw_character_sheet(&mut self.game_framebuffer, &self.game, character);
             }
             return;
         }
 
-        draw_dos_text(&mut self.game_framebuffer, 8, 8, view.title, WHITE);
-        let mut y = 24;
-        let option_limit = if self.game.screen == game::Screen::Blacksmith {
-            11
-        } else {
-            8
-        };
-        for option in view.options.iter().take(option_limit) {
-            draw_dos_text(&mut self.game_framebuffer, 8, y, option, CYAN);
-            y += 11;
-        }
-        for member in view.party.iter().take(6) {
-            if self.game.screen == game::Screen::Blacksmith && !member.is_current {
-                continue;
+        match self.game.screen {
+            game::Screen::Menu => draw_main_menu(&mut self.game_framebuffer),
+            game::Screen::CreateCharacter => draw_create_character(&mut self.game_framebuffer),
+            game::Screen::Roster => draw_roster(&mut self.game_framebuffer, self.game.roster()),
+            game::Screen::RosterCharacter | game::Screen::InnCharacter => {
+                if let Some(character) = self.game.current_character() {
+                    draw_character_sheet(&mut self.game_framebuffer, &self.game, character);
+                }
             }
-            draw_dos_text(
-                &mut self.game_framebuffer,
-                8,
-                y,
-                &format!(
-                    "{}{} L{} HP{} XP{} G{} GM{} C{:02X}",
-                    if member.is_current { "*" } else { " " },
-                    member.name,
-                    member.level,
-                    member.hp,
-                    member.experience,
-                    member.gold,
-                    member.gems,
-                    member.condition
-                ),
-                MAGENTA,
-            );
-            y += 10;
-        }
-        for line in view.message.as_bytes().chunks(39) {
-            draw_dos_text(
-                &mut self.game_framebuffer,
-                8,
-                y.min(184),
-                &String::from_utf8_lossy(line),
-                WHITE,
-            );
-            y += 10;
+            game::Screen::Inn => draw_inn(&mut self.game_framebuffer, &view.options),
+            _ => {
+                draw_generic_screen(&mut self.game_framebuffer, &view, self.game.screen);
+            }
         }
     }
+}
+
+fn draw_generic_screen(frame: &mut [u8], view: &game::PlayerView<'_>, screen: game::Screen) {
+    draw_dos_text(frame, 8, 8, view.title, WHITE);
+    let mut y = 24;
+    let option_limit = if screen == game::Screen::Blacksmith {
+        11
+    } else {
+        8
+    };
+    for option in view.options.iter().take(option_limit) {
+        draw_dos_text(frame, 8, y, option, CYAN);
+        y += 11;
+    }
+    for member in view.party.iter().take(6) {
+        if screen == game::Screen::Blacksmith && !member.is_current {
+            continue;
+        }
+        draw_dos_text(
+            frame,
+            8,
+            y,
+            &format!(
+                "{}{} L{} HP{} XP{} G{} GM{} C{:02X}",
+                if member.is_current { "*" } else { " " },
+                member.name,
+                member.level,
+                member.hp,
+                member.experience,
+                member.gold,
+                member.gems,
+                member.condition
+            ),
+            MAGENTA,
+        );
+        y += 10;
+    }
+    for line in view.message.as_bytes().chunks(39) {
+        draw_dos_text(frame, 8, y.min(184), &String::from_utf8_lossy(line), WHITE);
+        y += 10;
+    }
+}
+
+fn draw_frame(frame: &mut [u8], title: &str) {
+    draw_dos_text(frame, 24, 6, "----------------------------------", WHITE);
+    fill_rect(frame, 10, 24, 1, 152, WHITE);
+    fill_rect(frame, 307, 24, 1, 152, WHITE);
+    draw_dos_text(frame, 24, 183, "----------------------------------", WHITE);
+    draw_centered_text(frame, 0, title, WHITE);
+    fill_rect(frame, 0, 176, 24, 12, BLACK);
+    fill_rect(frame, 296, 176, 24, 12, BLACK);
+    draw_centered_text(frame, 192, "'ESC' TO GO BACK", WHITE);
+}
+
+fn draw_centered_text(frame: &mut [u8], y: u32, text: &str, color: u8) {
+    let width = text.chars().count() as u32 * 8;
+    draw_dos_text(frame, (WIDTH.saturating_sub(width)) / 2, y, text, color);
+}
+
+fn draw_main_menu(frame: &mut [u8]) {
+    draw_frame(frame, "");
+    draw_centered_text(frame, 32, "MIGHT AND MAGIC", WHITE);
+    draw_centered_text(frame, 48, "SECRET OF THE INNER SANCTUM", WHITE);
+    draw_centered_text(frame, 72, "OPTIONS", WHITE);
+    draw_dos_text(frame, 40, 94, "'C'........CREATE NEW CHARACTERS", WHITE);
+    draw_dos_text(frame, 40, 110, "'V'........VIEW ALL CHARACTERS", WHITE);
+    draw_dos_text(frame, 40, 126, "'M'........GO TO TOWN", WHITE);
+    draw_centered_text(frame, 176, "COPR. 1986,1987-JON VAN CANEGHEM", WHITE);
+    draw_centered_text(frame, 192, "ALL RIGHTS RESERVED", WHITE);
+}
+
+fn draw_create_character(frame: &mut [u8]) {
+    draw_frame(frame, "CREATE NEW CHARACTERS");
+    for (row, text) in [
+        "INTELLECT....= 14",
+        "MIGHT........= 11",
+        "PERSONALITY..= 13",
+        "ENDURANCE....= 10",
+        "SPEED........= 10",
+        "ACCURACY.....= 11",
+        "LUCK.........= 12",
+    ]
+    .iter()
+    .enumerate()
+    {
+        draw_dos_text(frame, 24, 40 + row as u32 * 16, text, WHITE);
+    }
+    for (row, text) in ["4) CLERIC", "5) SORCERER", "6) ROBBER"].iter().enumerate() {
+        draw_dos_text(frame, 184, 64 + row as u32 * 10, text, WHITE);
+    }
+    draw_dos_text(frame, 176, 136, "SELECT A CLASS", WHITE);
+    draw_dos_text(frame, 208, 152, "(1-6)", WHITE);
+    draw_dos_text(frame, 168, 168, "'ENT' TO RE-ROLL", WHITE);
+}
+
+fn class_name(class: u8) -> &'static str {
+    [
+        "", "KNIGHT", "PALADIN", "ARCHER", "CLERIC", "SORCERER", "ROBBER",
+    ]
+    .get(class as usize)
+    .copied()
+    .unwrap_or("UNKNOWN")
+}
+
+fn draw_roster(frame: &mut [u8], roster: &[Character]) {
+    draw_frame(frame, "VIEW ALL CHARACTERS");
+    for (index, character) in roster.iter().take(6).enumerate() {
+        let dots = ".".repeat(16usize.saturating_sub(character.name.len()));
+        draw_dos_text(
+            frame,
+            24,
+            24 + index as u32 * 10,
+            &format!(
+                "{}) {}{}({})L{}  {}",
+                (b'A' + index as u8) as char,
+                character.name,
+                dots,
+                character.sex,
+                character.level.current,
+                class_name(character.class)
+            ),
+            WHITE,
+        );
+    }
+    draw_centered_text(frame, 176, "'A'-'F' TO VIEW A CHARACTER", WHITE);
+}
+
+fn draw_inn(frame: &mut [u8], options: &[String]) {
+    draw_frame(frame, "(1) INN OF SORPIGAL");
+    draw_centered_text(frame, 24, "AVAILABLE CHARACTERS", WHITE);
+    let mut full = false;
+    for (index, option) in options.iter().take(6).enumerate() {
+        let selected = option.ends_with(" [IN PARTY]");
+        full |= selected
+            && options
+                .iter()
+                .take(6)
+                .filter(|line| line.ends_with(" [IN PARTY]"))
+                .count()
+                == 6;
+        let name = option
+            .split_once(' ')
+            .map(|(_, name)| name.trim_end_matches(" [IN PARTY]"))
+            .unwrap_or(option);
+        draw_dos_text(
+            frame,
+            24,
+            48 + index as u32 * 10,
+            &format!(
+                "{}{}){}",
+                if selected { "@" } else { "" },
+                (b'A' + index as u8) as char,
+                name
+            ),
+            WHITE,
+        );
+    }
+    if full {
+        draw_centered_text(frame, 128, "*** PARTY IS FULL ***", WHITE);
+    }
+    draw_centered_text(frame, 152, "'A'-'F' TO VIEW", WHITE);
+    draw_centered_text(frame, 160, "(CTRL)-'A'-'F' ADD/REMOVE", WHITE);
+    draw_centered_text(frame, 176, "'K' EXIT INN", WHITE);
 }
 
 fn draw_exploration(frame: &mut [u8], game: &game::Game, wall_sets: &[WallSet]) {
@@ -1232,60 +1397,116 @@ fn draw_command_panel(frame: &mut [u8]) {
     }
 }
 
-fn draw_character_sheet(frame: &mut [u8], character: &Character, member: &game::PartyMember<'_>) {
-    let class = [
-        "", "KNIGHT", "PALADIN", "ARCHER", "CLERIC", "SORCERER", "ROBBER",
-    ]
-    .get(character.class as usize)
-    .copied()
-    .unwrap_or("UNKNOWN");
-    draw_dos_text(frame, 8, 4, &character.name, WHITE);
-    draw_dos_text(frame, 160, 4, class, WHITE);
+fn draw_character_sheet(frame: &mut [u8], game: &game::Game, character: &Character) {
+    let sex = ["", "M", "F"]
+        .get(character.sex as usize)
+        .copied()
+        .unwrap_or("?");
+    let alignment = ["", "GOOD", "NEUT", "EVIL"]
+        .get(character.current_alignment as usize)
+        .copied()
+        .unwrap_or("?");
+    let race = ["", "HUMAN", "ELF", "DWARF", "GNOME", "HALF-ORC"]
+        .get(character.race as usize)
+        .copied()
+        .unwrap_or("?");
+    draw_dos_text(
+        frame,
+        0,
+        0,
+        &format!(
+            "{}  : {} {} {} {}",
+            character.name,
+            sex,
+            alignment,
+            race,
+            class_name(character.class)
+        ),
+        WHITE,
+    );
     for (row, line) in [
         format!(
-            "INT={:2}  LEVEL={:2}  AGE={:2}",
-            character.intellect.current, member.level, character.age
+            "INT={:<2}   LEVEL={:<2}  AGE={:<3}  EXP={}",
+            character.intellect.current,
+            character.level.current,
+            character.age,
+            character.experience
         ),
+        format!("MGT={:<2}", character.might.current),
         format!(
-            "MGT={:2}  HP={:3}/{:3}",
-            character.might.current, member.hp, member.max_hp
+            "PER={:<2}   SP={:<3}   /0    (0) GEMS={}",
+            character.personality.current, character.current_spell_points, character.gems
         ),
+        format!("END={:<2}", character.endurance.current),
         format!(
-            "PER={:2}  SP={:3}/{:3}",
-            character.personality.current,
-            character.current_spell_points,
-            character.maximum_spell_points
+            "SPD={:<2}   HP={:<3}   /{:<3}      GOLD={}",
+            character.speed.current,
+            character.current_hp,
+            character.effective_max_hp,
+            character.gold
         ),
+        format!("ACY={:<2}", character.accuracy.current),
         format!(
-            "END={:2}  AC={:2}",
-            character.endurance.current, character.armor_class.current
+            "LCK={:<2}   AC={:<2}             FOOD={}",
+            character.luck.current, character.armor_class.current, character.food
         ),
-        format!("SPD={:2}  GOLD={}", character.speed.current, member.gold),
-        format!("ACY={:2}  GEMS={}", character.accuracy.current, member.gems),
-        format!("LCK={:2}  FOOD={}", character.luck.current, member.food),
-        format!("COND={:02X} XP={}", member.condition, member.experience),
+        String::new(),
+        format!(
+            "COND= {}",
+            if character.condition == 0 {
+                "GOOD"
+            } else {
+                "BAD"
+            }
+        ),
     ]
     .iter()
     .enumerate()
     {
-        draw_dos_text(frame, 8, 18 + row as u32 * 10, line, WHITE);
+        draw_dos_text(frame, 0, 16 + row as u32 * 10, line, WHITE);
     }
-    fill_rect(frame, 0, 102, WIDTH, 1, CYAN);
-    draw_dos_text(frame, 8, 108, "BACKPACK", WHITE);
-    if member.backpack.is_empty() {
-        draw_dos_text(frame, 8, 120, "EMPTY", CYAN);
-    } else {
-        for (row, item) in member.backpack.iter().enumerate() {
+    draw_dos_text(frame, 48, 112, "<EQUIPPED>--------><BACKPACK>", WHITE);
+    for slot in 0..6 {
+        let equipped = game.item_name(character.equipped_items[slot]);
+        let backpack = game.item_name(character.backpack_items[slot]);
+        if !equipped.is_empty() {
             draw_dos_text(
                 frame,
-                8,
-                120 + row as u32 * 10,
-                &format!("{}) {}  CHG {}", item.slot, item.name, item.charges),
-                CYAN,
+                0,
+                128 + slot as u32 * 10,
+                &format!("{}) {}", slot + 1, equipped),
+                WHITE,
+            );
+        } else {
+            draw_dos_text(
+                frame,
+                0,
+                128 + slot as u32 * 10,
+                &format!("{})", slot + 1),
+                WHITE,
+            );
+        }
+        if !backpack.is_empty() {
+            draw_dos_text(
+                frame,
+                176,
+                128 + slot as u32 * 10,
+                &format!("{}) {}", (b'A' + slot as u8) as char, backpack),
+                WHITE,
+            );
+        } else {
+            draw_dos_text(
+                frame,
+                176,
+                128 + slot as u32 * 10,
+                &format!("{})", (b'A' + slot as u8) as char),
+                WHITE,
             );
         }
     }
-    draw_dos_text(frame, 176, 188, "ESC TO RETURN", WHITE);
+    draw_centered_text(frame, 168, "(CTRL)-'N' RE-NAME CHARACTER", WHITE);
+    draw_centered_text(frame, 178, "(CTRL)-'D' DELETE CHARACTER", WHITE);
+    draw_centered_text(frame, 192, "'ESC' TO GO BACK", WHITE);
 }
 
 fn draw_combat_panel(frame: &mut [u8], combat: &game::CombatView<'_>, screen: game::Screen) {
@@ -1415,7 +1636,12 @@ impl ApplicationHandler for GameWindow {
                 } else {
                     &self.game_framebuffer
                 };
-                copy_to_rgba(frame, pixels.frame_mut());
+                let palette = if self.game.screen == game::Screen::Title {
+                    &TITLE_EGA_PALETTE
+                } else {
+                    &GAME_EGA_PALETTE
+                };
+                copy_to_rgba_with_palette(frame, pixels.frame_mut(), palette);
                 if let Err(error) = pixels.render() {
                     eprintln!("could not render the title screen: {error}");
                     event_loop.exit();
@@ -1556,8 +1782,12 @@ fn copy_rect(source: &[u8], destination: &mut [u8], x: u32, y: u32, width: u32, 
 }
 
 fn copy_to_rgba(indexed: &[u8], rgba: &mut [u8]) {
+    copy_to_rgba_with_palette(indexed, rgba, &PALETTE);
+}
+
+fn copy_to_rgba_with_palette(indexed: &[u8], rgba: &mut [u8], palette: &[[u8; 4]; 4]) {
     for (color, pixel) in indexed.iter().zip(rgba.chunks_exact_mut(4)) {
-        pixel.copy_from_slice(&PALETTE[*color as usize]);
+        pixel.copy_from_slice(&palette[*color as usize]);
     }
 }
 
@@ -1632,6 +1862,15 @@ fn dos_glyph(character: char) -> [u8; 8] {
         '8' => [0x78, 0xcc, 0xcc, 0x78, 0xcc, 0xcc, 0x78, 0x00],
         '9' => [0x78, 0xcc, 0xcc, 0x7c, 0x0c, 0x18, 0x70, 0x00],
         ':' => [0x00, 0x30, 0x30, 0x00, 0x00, 0x30, 0x30, 0x00],
+        '.' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x30, 0x00],
+        ',' => [0x00, 0x00, 0x00, 0x00, 0x30, 0x30, 0x60, 0x00],
+        '\'' => [0x30, 0x30, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00],
+        '(' => [0x0c, 0x18, 0x30, 0x30, 0x30, 0x18, 0x0c, 0x00],
+        ')' => [0x60, 0x30, 0x18, 0x18, 0x18, 0x30, 0x60, 0x00],
+        '=' => [0x00, 0x00, 0xfc, 0x00, 0xfc, 0x00, 0x00, 0x00],
+        '*' => [0x00, 0x66, 0x3c, 0xff, 0x3c, 0x66, 0x00, 0x00],
+        '@' => [0x7c, 0xc6, 0xde, 0xde, 0xde, 0xc0, 0x78, 0x00],
+        '?' => [0x78, 0xcc, 0x0c, 0x18, 0x30, 0x00, 0x30, 0x00],
         '-' => [0x00, 0x00, 0x00, 0xfc, 0x00, 0x00, 0x00, 0x00],
         '/' => [0x06, 0x0c, 0x18, 0x30, 0x60, 0xc0, 0x80, 0x00],
         '^' => [0x10, 0x38, 0x6c, 0xc6, 0x00, 0x00, 0x00, 0x00],
@@ -1694,14 +1933,15 @@ mod tests {
         );
 
         assert!(!window.key_pressed(&Key::Named(NamedKey::Space)));
-        assert_eq!(window.game.screen, game::Screen::Inn);
+        assert_eq!(window.game.screen, game::Screen::Menu);
         let mut window = GameWindow::new(
             TitleAnimation::load().unwrap(),
             None,
             game::Game::load().unwrap(),
             save_path.clone(),
         );
-        assert!(window.key_pressed(&Key::Named(NamedKey::Escape)));
+        assert!(!window.key_pressed(&Key::Named(NamedKey::Escape)));
+        assert_eq!(window.game.screen, game::Screen::Menu);
         fs::remove_file(save_path).unwrap();
     }
 
@@ -1728,7 +1968,7 @@ mod tests {
             .collect();
         assert_eq!(views.len(), 4);
         assert_eq!(views[0]["kind"], "title");
-        assert_eq!(views[1]["kind"], "inn");
+        assert_eq!(views[1]["kind"], "menu");
         assert_eq!(views[2]["kind"], "inn");
         assert_eq!(views[3]["kind"], "town");
         fs::remove_file(save_path).unwrap();

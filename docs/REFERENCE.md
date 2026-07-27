@@ -553,6 +553,21 @@ destination = y * row_stride + byte_x
 No palette is embedded. Values 0 through 3 are logical colors translated by
 adapter-specific rendering code.
 
+### EGA presentation (corroborated by captures)
+
+Original EGA captures show that the same logical indices are presented with
+screen-specific colors rather than one global CGA palette. The title uses black,
+green, red, and white; dungeon graphics use black, bright yellow, brown, and
+white. The native renderer now preserves the indexed framebuffer and performs
+that palette choice only while converting to RGBA. The exact palette-register
+setup code in `MM.EXE` remains to be traced, so the RGB intensities are
+corroborated by the captures rather than verified from executable code.
+
+The captures also corroborate this startup flow: input at the animated title
+(including Escape) opens an options screen; Create, View, and Go to Town lead to
+character creation, the roster, and the Inn of Sorpigal respectively. At the
+inn, A-F views a character and Ctrl-A through Ctrl-F changes party membership.
+
 ## `SCREEN0`–`SCREEN9`
 
 Each screen consists of one compressed object with no index:

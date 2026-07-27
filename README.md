@@ -50,9 +50,12 @@ The detailed findings are recorded in
 
 ## Current status
 
-The project now includes a native playable Sorpigal slice. Space or Enter opens
-the inn, number keys select up to six supplied roster characters, Enter starts
-town exploration, and arrow keys move and turn through map 0's original walls.
+The project now includes a native playable Sorpigal slice. Escape, Space, or
+Enter leaves the animated title for the original-style options screen. `C`
+opens character creation, `V` opens the roster, and Enter enters the Inn of
+Sorpigal. At the inn, A-F view characters, Ctrl-A through Ctrl-F add or remove
+up to six party members, and Enter starts town exploration. Arrow keys move and
+turn through map 0's original walls.
 Exploration renders the original perspective wall, door, and special-wall
 components at four depths, with the command panel, party roster, and messages
 composed in the logical 320x200 framebuffer. Number keys open character views.
@@ -68,11 +71,12 @@ advance the `SCREEN2` through `SCREEN9` slideshow; each image advances
 automatically after ten seconds. The original PC-speaker title sequence is
 rendered to MP3 and played through `rodio`.
 
-Escape declines or backs out after starting; close the window or press
-Ctrl-C/Ctrl-Q to quit. The engine atomically autosaves to `savegame.json` after
-every completed command and on clean shutdown, then resumes that state on the
-next graphical or headless invocation. The save contains native mutable state
-while immutable definitions continue to load from the original DOS assets. If
+Escape starts the game from the animated title and otherwise backs out; close
+the window or press Ctrl-C/Ctrl-Q to quit. The engine atomically autosaves to
+`savegame.json` after every completed command and on clean shutdown, then
+resumes that state on the next graphical or headless invocation. The save
+contains native mutable state while immutable definitions continue to load from
+the original DOS assets. If
 an audio device or the title music is unavailable, the executable reports the
 problem on stderr and continues without audio.
 

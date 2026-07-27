@@ -63,7 +63,12 @@ impl Facing {
 #[serde(rename_all = "snake_case")]
 pub enum Screen {
     Title,
+    Menu,
+    CreateCharacter,
+    Roster,
+    RosterCharacter,
     Inn,
+    InnCharacter,
     Town,
     Food,
     Tavern,
@@ -400,8 +405,11 @@ impl Game {
         {
             return Err("save-game party selection is invalid".into());
         }
-        if (!save.party.is_empty() && save.current >= save.party.len())
-            || (save.party.is_empty() && save.current != 0)
+        let roster_character =
+            matches!(save.screen, Screen::RosterCharacter | Screen::InnCharacter);
+        if (roster_character && save.current >= save.roster.len())
+            || (!roster_character && !save.party.is_empty() && save.current >= save.party.len())
+            || (!roster_character && save.party.is_empty() && save.current != 0)
             || save.drinks.len() != save.party.len()
         {
             return Err("save-game current party member is invalid".into());
@@ -447,7 +455,12 @@ impl Game {
     pub fn view(&self) -> PlayerView<'_> {
         let title = match self.screen {
             Screen::Title => "Might and Magic",
+            Screen::Menu => "Options",
+            Screen::CreateCharacter => "Create New Characters",
+            Screen::Roster => "View All Characters",
+            Screen::RosterCharacter => "Character",
             Screen::Inn => "Sorpigal Inn",
+            Screen::InnCharacter => "Character",
             Screen::Town => "Sorpigal",
             Screen::Food => "Food Store",
             Screen::Tavern => "Tavern",
@@ -464,6 +477,25 @@ impl Game {
         };
         let options = match self.screen {
             Screen::Title => vec!["start".into()],
+            Screen::Menu => vec!["create".into(), "view".into(), "enter".into()],
+            Screen::CreateCharacter => vec![
+                "choose:1".into(),
+                "choose:2".into(),
+                "choose:3".into(),
+                "choose:4".into(),
+                "choose:5".into(),
+                "choose:6".into(),
+                "reroll".into(),
+                "escape".into(),
+            ],
+            Screen::Roster => self
+                .roster
+                .iter()
+                .enumerate()
+                .map(|(index, character)| format!("view-roster:{} {}", index + 1, character.name))
+                .chain(["escape".into()])
+                .collect(),
+            Screen::RosterCharacter => vec!["escape".into()],
             Screen::Inn => self
                 .roster
                 .iter()
@@ -482,6 +514,7 @@ impl Game {
                 })
                 .chain(["confirm".into()])
                 .collect(),
+            Screen::InnCharacter => vec!["escape".into()],
             Screen::Town => vec![
                 "forward".into(),
                 "back".into(),
@@ -580,10 +613,16 @@ impl Game {
                         .collect(),
                 })
                 .collect(),
-            position: (self.screen != Screen::Title && self.screen != Screen::Inn)
-                .then_some((self.x, self.y)),
-            facing: (self.screen != Screen::Title && self.screen != Screen::Inn)
-                .then_some(self.facing),
+            position: matches!(
+                self.screen,
+                Screen::Town | Screen::Encounter | Screen::Combat | Screen::Treasure
+            )
+            .then_some((self.x, self.y)),
+            facing: matches!(
+                self.screen,
+                Screen::Town | Screen::Encounter | Screen::Combat | Screen::Treasure
+            )
+            .then_some(self.facing),
             exits: if self.screen == Screen::Town {
                 [Facing::North, Facing::East, Facing::South, Facing::West]
                     .into_iter()
@@ -657,14 +696,64 @@ impl Game {
         }
         if self.screen == Screen::Title {
             if cmd == "start" || cmd == "confirm" {
-                self.screen = Screen::Inn;
-                self.message = "Select one to six adventurers, then confirm.".into();
+                self.screen = Screen::Menu;
             } else {
-                self.message = "Use start to enter the Inn of Sorpigal.".into();
+                self.message = "Use start to continue.".into();
+            }
+            return;
+        }
+        if self.screen == Screen::Menu {
+            if cmd.starts_with("toggle:") {
+                self.screen = Screen::Inn;
+                self.command(raw);
+                return;
+            }
+            match cmd.as_str() {
+                "create" => self.screen = Screen::CreateCharacter,
+                "view" => self.screen = Screen::Roster,
+                "enter" | "confirm" => self.screen = Screen::Inn,
+                _ => self.message = "Choose create, view, or enter.".into(),
+            }
+            return;
+        }
+        if self.screen == Screen::CreateCharacter {
+            if cmd == "escape" {
+                self.screen = Screen::Menu;
+            }
+            return;
+        }
+        if self.screen == Screen::Roster {
+            if cmd == "escape" {
+                self.screen = Screen::Menu;
+            } else if let Some(index) = cmd
+                .strip_prefix("view-roster:")
+                .and_then(|value| value.parse::<usize>().ok())
+                .and_then(|index| index.checked_sub(1))
+                && index < self.roster.len()
+            {
+                self.current = index;
+                self.screen = Screen::RosterCharacter;
+            }
+            return;
+        }
+        if self.screen == Screen::RosterCharacter {
+            if cmd == "escape" {
+                self.current = 0;
+                self.screen = Screen::Roster;
             }
             return;
         }
         if self.screen == Screen::Inn {
+            if let Some(index) = cmd
+                .strip_prefix("view-inn:")
+                .and_then(|value| value.parse::<usize>().ok())
+                .and_then(|index| index.checked_sub(1))
+                && index < self.roster.len()
+            {
+                self.current = index;
+                self.screen = Screen::InnCharacter;
+                return;
+            }
             if let Some(n) = cmd
                 .strip_prefix("toggle:")
                 .and_then(|s| s.parse::<usize>().ok())
@@ -697,13 +786,20 @@ impl Game {
                     self.message = "You leave the inn and enter Sorpigal.".into()
                 }
             } else if cmd == "escape" && self.party.is_empty() {
-                self.screen = Screen::Title;
+                self.screen = Screen::Menu;
             } else if cmd == "escape" {
                 self.x = 8;
                 self.y = 3;
                 self.facing = Facing::North;
                 self.screen = Screen::Town;
                 self.message = "You leave the inn without changing the party.".into();
+            }
+            return;
+        }
+        if self.screen == Screen::InnCharacter {
+            if cmd == "escape" {
+                self.current = 0;
+                self.screen = Screen::Inn;
             }
             return;
         }
@@ -796,7 +892,19 @@ impl Game {
     }
 
     pub fn current_character(&self) -> Option<&Character> {
-        self.party.get(self.current)
+        if matches!(self.screen, Screen::RosterCharacter | Screen::InnCharacter) {
+            self.roster.get(self.current)
+        } else {
+            self.party.get(self.current)
+        }
+    }
+
+    pub fn item_name(&self, id: u8) -> &str {
+        if id == 0 { "" } else { &self.item(id).name }
+    }
+
+    pub fn roster(&self) -> &[Character] {
+        &self.roster
     }
 
     pub fn blacksmith_number_action(&self) -> &'static str {
@@ -1718,6 +1826,25 @@ mod tests {
     }
 
     #[test]
+    fn title_opens_original_top_level_flow() {
+        let mut g = Game::load().unwrap();
+        g.command("start");
+        assert_eq!(g.screen, Screen::Menu);
+        g.command("view");
+        assert_eq!(g.screen, Screen::Roster);
+        g.command("view-roster:1");
+        assert_eq!(g.screen, Screen::RosterCharacter);
+        assert_eq!(g.current_character().unwrap().name, "CRAG THE HACK");
+        g.command("escape");
+        g.command("escape");
+        g.command("create");
+        assert_eq!(g.screen, Screen::CreateCharacter);
+        g.command("escape");
+        g.command("enter");
+        assert_eq!(g.screen, Screen::Inn);
+    }
+
+    #[test]
     fn movement_uses_directional_property_restrictions() {
         let mut g = Game::load().unwrap();
         g.x = 3;
@@ -1942,7 +2069,12 @@ mod tests {
         let mut g = Game::load().unwrap();
         for s in [
             Screen::Title,
+            Screen::Menu,
+            Screen::CreateCharacter,
+            Screen::Roster,
+            Screen::RosterCharacter,
             Screen::Inn,
+            Screen::InnCharacter,
             Screen::Town,
             Screen::Food,
             Screen::Tavern,
