@@ -68,9 +68,13 @@ advance the `SCREEN2` through `SCREEN9` slideshow; each image advances
 automatically after ten seconds. The original PC-speaker title sequence is
 rendered to MP3 and played through `rodio`.
 
-Escape declines or backs out after starting; close the window or press Ctrl-Q
-to quit. If an audio device or the title music is unavailable, the executable
-reports the problem on stderr and continues without audio.
+Escape declines or backs out after starting; close the window or press
+Ctrl-C/Ctrl-Q to quit. The engine atomically autosaves to `savegame.json` after
+every completed command and on clean shutdown, then resumes that state on the
+next graphical or headless invocation. The save contains native mutable state
+while immutable definitions continue to load from the original DOS assets. If
+an audio device or the title music is unavailable, the executable reports the
+problem on stderr and continues without audio.
 
 Important remaining research includes:
 
@@ -78,8 +82,7 @@ Important remaining research includes:
 2. Identifying the remaining map descriptor fields and event return values.
 3. Mapping character flags, conditions, resistances, items, spells, and monster
    identifiers to their exact game semantics.
-4. Defining which runtime and map-local values belong in a resumable save game.
-5. Reconstructing rendering composition and palettes while retaining the
+4. Reconstructing rendering composition and palettes while retaining the
    original four-color source artwork.
 
 Implementation should follow the documented formats and preserve unresolved
@@ -150,8 +153,9 @@ Each JSON view lists the commands valid on its current screen. Output uses
 schema version 2 and includes options, party resources, messages,
 position/facing, and directional wall/exits. Non-interactive headless mode
 always outputs one JSON document; interactive mode outputs one document per
-NDJSON line. With no commands it remains the title view. No game state or DOS
-asset is ever written.
+NDJSON line. Commands continue from `savegame.json`; without an existing save,
+the initial view is the title. The engine writes only the native save and never
+modifies a DOS asset.
 
 Run the development checks with:
 

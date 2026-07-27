@@ -6,6 +6,7 @@ use std::{
     error::Error,
     fs::{self, File},
     io::{self, BufRead, Write},
+    path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -33,6 +34,7 @@ const TITLE_RING_COUNT: u32 = 20;
 const SLIDESHOW_INTERVAL: Duration = Duration::from_secs(10);
 const FIRST_SCENE: usize = 2;
 const LAST_SCENE: usize = 9;
+const SAVE_PATH: &str = "savegame.json";
 
 const BLACK: u8 = 0;
 const CYAN: u8 = 1;
@@ -112,7 +114,13 @@ fn parse_args() -> Result<Args, String> {
 fn run_headless(commands: &[String], interactive: bool) -> Result<(), Box<dyn Error>> {
     let stdin = io::stdin();
     let stdout = io::stdout();
-    run_headless_io(commands, interactive, stdin.lock(), stdout.lock())
+    run_headless_io(
+        commands,
+        interactive,
+        stdin.lock(),
+        stdout.lock(),
+        Path::new(SAVE_PATH),
+    )
 }
 
 fn run_headless_io<R: BufRead, W: Write>(
@@ -120,16 +128,18 @@ fn run_headless_io<R: BufRead, W: Write>(
     interactive: bool,
     input: R,
     mut output: W,
+    save_path: &Path,
 ) -> Result<(), Box<dyn Error>> {
-    let mut game = game::Game::load()?;
+    let mut game = game::Game::load_or_new(save_path)?;
     for command in commands {
-        game.command(command);
+        apply_and_save(&mut game, command, save_path)?;
     }
 
     if !interactive {
         serde_json::to_writer_pretty(&mut output, &game.view())?;
         writeln!(output)?;
         output.flush()?;
+        game.save(save_path)?;
         return Ok(());
     }
 
@@ -140,10 +150,16 @@ fn run_headless_io<R: BufRead, W: Write>(
         if command.is_empty() {
             continue;
         }
-        game.command(command);
+        apply_and_save(&mut game, command, save_path)?;
         write_ndjson_view(&mut output, &game)?;
     }
+    game.save(save_path)?;
     Ok(())
+}
+
+fn apply_and_save(game: &mut game::Game, command: &str, save_path: &Path) -> Result<(), String> {
+    game.command(command);
+    game.save(save_path)
 }
 
 fn write_ndjson_view(output: &mut impl Write, game: &game::Game) -> Result<(), Box<dyn Error>> {
@@ -156,8 +172,17 @@ fn write_ndjson_view(output: &mut impl Write, game: &game::Game) -> Result<(), B
 fn run_windowed() -> Result<(), Box<dyn Error>> {
     let event_loop = EventLoop::new()?;
     let animation = TitleAnimation::load()?;
-    let mut app = GameWindow::new(animation, TitleMusic::start());
-    event_loop.run_app(&mut app)?;
+    let game = game::Game::load_or_new(Path::new(SAVE_PATH))?;
+    let mut app = GameWindow::new(
+        animation,
+        TitleMusic::start(),
+        game,
+        PathBuf::from(SAVE_PATH),
+    );
+    let run_result = event_loop.run_app(&mut app);
+    let save_result = app.game.save(&app.save_path);
+    run_result?;
+    save_result?;
     Ok(())
 }
 
@@ -921,36 +946,48 @@ struct GameWindow {
     walls: Vec<WallSet>,
     monsters: Vec<Vec<u8>>,
     modifiers: ModifiersState,
-    blacksmith_number_action: &'static str,
+    save_path: PathBuf,
 }
 
 impl GameWindow {
-    fn new(animation: TitleAnimation, title_music: Option<TitleMusic>) -> Self {
+    fn new(
+        animation: TitleAnimation,
+        title_music: Option<TitleMusic>,
+        game: game::Game,
+        save_path: PathBuf,
+    ) -> Self {
         let walls = decode_wall_sets(&fs::read("dos/WALLPIX.DTA").expect("could not load walls"))
             .expect("could not decode walls");
         let monsters =
             decode_monsters(&fs::read("dos/MONPIX.DTA").expect("could not load monsters"))
                 .expect("could not decode monsters");
-        Self {
+        let mut window = Self {
             window: None,
             pixels: None,
             animation,
             next_update: Instant::now() + TITLE_RING_INTERVAL,
             _title_music: title_music,
-            game: game::Game::load().expect("could not load game data"),
+            game,
             game_framebuffer: vec![BLACK; (WIDTH * HEIGHT) as usize],
             walls,
             monsters,
             modifiers: ModifiersState::empty(),
-            blacksmith_number_action: "buy:",
+            save_path,
+        };
+        if window.game.screen != game::Screen::Title {
+            window.redraw_game();
+        }
+        window
+    }
+
+    fn apply_command(&mut self, command: &str) {
+        if let Err(error) = apply_and_save(&mut self.game, command, &self.save_path) {
+            eprintln!("could not autosave game: {error}");
         }
     }
 
     fn key_pressed(&mut self, key: &Key) -> bool {
         if self.game.screen != game::Screen::Title {
-            if self.game.screen != game::Screen::Blacksmith {
-                self.blacksmith_number_action = "buy:";
-            }
             let command = match key {
                 Key::Named(NamedKey::Escape) => Some("escape"),
                 Key::Named(NamedKey::Enter | NamedKey::Space) => Some(match self.game.screen {
@@ -966,12 +1003,11 @@ impl GameWindow {
                     let command = match self.game.screen {
                         game::Screen::Inn => "toggle:",
                         game::Screen::Town => "view:",
-                        game::Screen::Blacksmith => self.blacksmith_number_action,
+                        game::Screen::Blacksmith => self.game.blacksmith_number_action(),
                         game::Screen::Combat => "attack:",
                         _ => "choose:",
                     };
-                    self.game.command(&format!("{command}{c}"));
-                    self.blacksmith_number_action = "buy:";
+                    self.apply_command(&format!("{command}{c}"));
                     None
                 }
                 Key::Character(c) => match c.to_ascii_lowercase().as_str() {
@@ -985,18 +1021,9 @@ impl GameWindow {
                     "f" => Some("food"),
                     "c" if self.game.screen == game::Screen::Combat => Some("cast"),
                     "d" if self.game.screen == game::Screen::Combat => Some("defend"),
-                    "a" if self.game.screen == game::Screen::Blacksmith => {
-                        self.blacksmith_number_action = "buy:";
-                        Some("armor")
-                    }
-                    "c" if self.game.screen == game::Screen::Blacksmith => {
-                        self.blacksmith_number_action = "choose:";
-                        None
-                    }
-                    "s" if self.game.screen == game::Screen::Blacksmith => {
-                        self.blacksmith_number_action = "sell:";
-                        None
-                    }
+                    "a" if self.game.screen == game::Screen::Blacksmith => Some("armor"),
+                    "c" if self.game.screen == game::Screen::Blacksmith => Some("choose-member"),
+                    "s" if self.game.screen == game::Screen::Blacksmith => Some("sell-item"),
                     "o" if self.game.screen == game::Screen::Treasure => Some("open"),
                     "l" if self.game.screen == game::Screen::Treasure => Some("leave"),
                     "d" => Some("drink"),
@@ -1008,14 +1035,8 @@ impl GameWindow {
                     "o" => Some("donate"),
                     "h" => Some("restore"),
                     "a" if self.game.screen == game::Screen::Temple => Some("realign"),
-                    "w" => {
-                        self.blacksmith_number_action = "buy:";
-                        Some("weapons")
-                    }
-                    "m" => {
-                        self.blacksmith_number_action = "buy:";
-                        Some("misc")
-                    }
+                    "w" => Some("weapons"),
+                    "m" => Some("misc"),
                     "b" => Some("bash"),
                     "y" => Some("yes"),
                     "n" => Some("no"),
@@ -1024,7 +1045,7 @@ impl GameWindow {
                 _ => None,
             };
             if let Some(command) = command {
-                self.game.command(command);
+                self.apply_command(command);
             }
             self.redraw_game();
             if let Some(window) = &self.window {
@@ -1037,7 +1058,7 @@ impl GameWindow {
         }
 
         if key == &Key::Named(NamedKey::Space) || key == &Key::Named(NamedKey::Enter) {
-            self.game.command("start");
+            self.apply_command("start");
             self.redraw_game();
             if let Some(window) = &self.window {
                 window.request_redraw();
@@ -1664,12 +1685,24 @@ mod tests {
 
     #[test]
     fn title_keys_start_and_advance_the_slideshow_or_exit() {
-        let mut window = GameWindow::new(TitleAnimation::load().unwrap(), None);
+        let save_path = temporary_save_path("title-keys");
+        let mut window = GameWindow::new(
+            TitleAnimation::load().unwrap(),
+            None,
+            game::Game::load().unwrap(),
+            save_path.clone(),
+        );
 
         assert!(!window.key_pressed(&Key::Named(NamedKey::Space)));
         assert_eq!(window.game.screen, game::Screen::Inn);
-        let mut window = GameWindow::new(TitleAnimation::load().unwrap(), None);
+        let mut window = GameWindow::new(
+            TitleAnimation::load().unwrap(),
+            None,
+            game::Game::load().unwrap(),
+            save_path.clone(),
+        );
         assert!(window.key_pressed(&Key::Named(NamedKey::Escape)));
+        fs::remove_file(save_path).unwrap();
     }
 
     #[test]
@@ -1684,8 +1717,9 @@ mod tests {
     fn interactive_headless_emits_one_json_view_per_command() {
         let input = b"start\n\ntoggle:1\nconfirm\n";
         let mut output = Vec::new();
+        let save_path = temporary_save_path("headless");
 
-        run_headless_io(&[], true, &input[..], &mut output).unwrap();
+        run_headless_io(&[], true, &input[..], &mut output, &save_path).unwrap();
 
         let views: Vec<serde_json::Value> = String::from_utf8(output)
             .unwrap()
@@ -1697,6 +1731,11 @@ mod tests {
         assert_eq!(views[1]["kind"], "inn");
         assert_eq!(views[2]["kind"], "inn");
         assert_eq!(views[3]["kind"], "town");
+        fs::remove_file(save_path).unwrap();
+    }
+
+    fn temporary_save_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("mm1-{name}-{}.json", std::process::id()))
     }
 
     #[test]

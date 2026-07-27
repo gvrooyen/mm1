@@ -1,10 +1,14 @@
-use std::fs;
+use std::{
+    fs::{self, File},
+    io::{self, Write},
+    path::Path,
+};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::character::{Character, decode_roster};
 
-#[derive(Clone, Copy, Debug, Serialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum Facing {
     North,
@@ -55,7 +59,7 @@ impl Facing {
     }
 }
 
-#[derive(Clone, Copy, Debug, Serialize, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Screen {
     Title,
@@ -73,6 +77,24 @@ pub enum Screen {
     Combat,
     Treasure,
     Character,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum BlacksmithNumberAction {
+    Buy,
+    ChooseMember,
+    Sell,
+}
+
+impl BlacksmithNumberAction {
+    fn command_prefix(self) -> &'static str {
+        match self {
+            Self::Buy => "buy:",
+            Self::ChooseMember => "choose:",
+            Self::Sell => "sell:",
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -165,14 +187,14 @@ struct MonsterDef {
     loot: u8,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct Enemy {
     definition: usize,
     hp: u16,
     max_hp: u16,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct CombatState {
     enemies: Vec<Enemy>,
     round: u16,
@@ -199,11 +221,65 @@ pub struct Game {
     encounter_min_level: u8,
     encounter_max_level: u8,
     shop_stock: Option<[u8; 6]>,
+    blacksmith_number_action: BlacksmithNumberAction,
     properties: [u8; 256],
     cleared_specials: [bool; 256],
     drinks: Vec<u8>,
     rumor_heard: bool,
     rng: u32,
+}
+
+const SAVE_FORMAT_VERSION: u32 = 1;
+
+#[derive(Deserialize, Serialize)]
+struct SaveGame {
+    format_version: u32,
+    screen: Screen,
+    roster: Vec<Character>,
+    selected: Vec<usize>,
+    party: Vec<Character>,
+    x: u8,
+    y: u8,
+    facing: Facing,
+    message: String,
+    current: usize,
+    combat: Option<CombatState>,
+    encounter_min_level: u8,
+    encounter_max_level: u8,
+    shop_stock: Option<[u8; 6]>,
+    blacksmith_number_action: BlacksmithNumberAction,
+    properties: Vec<u8>,
+    cleared_specials: Vec<bool>,
+    drinks: Vec<u8>,
+    rumor_heard: bool,
+    rng: u32,
+}
+
+impl SaveGame {
+    fn from_game(game: &Game) -> Self {
+        Self {
+            format_version: SAVE_FORMAT_VERSION,
+            screen: game.screen,
+            roster: game.roster.clone(),
+            selected: game.selected.clone(),
+            party: game.party.clone(),
+            x: game.x,
+            y: game.y,
+            facing: game.facing,
+            message: game.message.clone(),
+            current: game.current,
+            combat: game.combat.clone(),
+            encounter_min_level: game.encounter_min_level,
+            encounter_max_level: game.encounter_max_level,
+            shop_stock: game.shop_stock,
+            blacksmith_number_action: game.blacksmith_number_action,
+            properties: game.properties.to_vec(),
+            cleared_specials: game.cleared_specials.to_vec(),
+            drinks: game.drinks.clone(),
+            rumor_heard: game.rumor_heard,
+            rng: game.rng,
+        }
+    }
 }
 
 impl Game {
@@ -247,12 +323,127 @@ impl Game {
             encounter_min_level,
             encounter_max_level,
             shop_stock: None,
+            blacksmith_number_action: BlacksmithNumberAction::Buy,
             cleared_specials: [false; 256],
             drinks: vec![],
             rumor_heard: false,
             rng: 0x4d4d_3101,
         })
     }
+
+    pub fn load_or_new(save_path: &Path) -> Result<Self, String> {
+        let mut game = Self::load()?;
+        let data = match fs::read(save_path) {
+            Ok(data) => data,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(game),
+            Err(error) => {
+                return Err(format!(
+                    "could not read save game {}: {error}",
+                    save_path.display()
+                ));
+            }
+        };
+        let save: SaveGame = serde_json::from_slice(&data).map_err(|error| {
+            format!(
+                "could not decode save game {}: {error}",
+                save_path.display()
+            )
+        })?;
+        game.restore(save)?;
+        Ok(game)
+    }
+
+    pub fn save(&self, save_path: &Path) -> Result<(), String> {
+        let temporary_path = save_path.with_extension("json.tmp");
+        let result = (|| -> Result<(), String> {
+            let mut file = File::create(&temporary_path).map_err(|error| {
+                format!(
+                    "could not create temporary save game {}: {error}",
+                    temporary_path.display()
+                )
+            })?;
+            serde_json::to_writer_pretty(&mut file, &SaveGame::from_game(self))
+                .map_err(|error| format!("could not encode save game: {error}"))?;
+            writeln!(file).map_err(|error| format!("could not write save game: {error}"))?;
+            file.sync_all()
+                .map_err(|error| format!("could not flush save game: {error}"))?;
+            fs::rename(&temporary_path, save_path).map_err(|error| {
+                format!(
+                    "could not replace save game {}: {error}",
+                    save_path.display()
+                )
+            })?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(temporary_path);
+        }
+        result
+    }
+
+    fn restore(&mut self, save: SaveGame) -> Result<(), String> {
+        if save.format_version != SAVE_FORMAT_VERSION {
+            return Err(format!(
+                "unsupported save-game format version {}; expected {SAVE_FORMAT_VERSION}",
+                save.format_version
+            ));
+        }
+        if save.x >= 16 || save.y >= 16 {
+            return Err("save-game position is outside the active map".into());
+        }
+        if save.party.len() > 6
+            || save.selected.len() > 6
+            || save
+                .selected
+                .iter()
+                .any(|index| *index >= save.roster.len())
+        {
+            return Err("save-game party selection is invalid".into());
+        }
+        if (!save.party.is_empty() && save.current >= save.party.len())
+            || (save.party.is_empty() && save.current != 0)
+            || save.drinks.len() != save.party.len()
+        {
+            return Err("save-game current party member is invalid".into());
+        }
+        if save.combat.as_ref().is_some_and(|combat| {
+            combat.active >= save.party.len()
+                || combat
+                    .enemies
+                    .iter()
+                    .any(|enemy| enemy.definition >= self.monsters.len())
+        }) {
+            return Err("save-game combat state is invalid".into());
+        }
+
+        self.screen = save.screen;
+        self.roster = save.roster;
+        self.selected = save.selected;
+        self.party = save.party;
+        self.x = save.x;
+        self.y = save.y;
+        self.facing = save.facing;
+        self.message = save.message;
+        self.current = save.current;
+        self.combat = save.combat;
+        self.encounter_min_level = save.encounter_min_level;
+        self.encounter_max_level = save.encounter_max_level;
+        self.shop_stock = save.shop_stock;
+        self.blacksmith_number_action = save.blacksmith_number_action;
+        self.properties = save
+            .properties
+            .try_into()
+            .map_err(|_| "save-game map state has the wrong size")?;
+        self.cleared_specials = save
+            .cleared_specials
+            .try_into()
+            .map_err(|_| "save-game special state has the wrong size")?;
+        self.drinks = save.drinks;
+        self.rumor_heard = save.rumor_heard;
+        self.rng = save.rng;
+        Ok(())
+    }
+
     pub fn view(&self) -> PlayerView<'_> {
         let title = match self.screen {
             Screen::Title => "Might and Magic",
@@ -457,6 +648,13 @@ impl Game {
     pub fn command(&mut self, raw: &str) {
         let cmd = raw.trim().to_ascii_lowercase();
         self.message.clear();
+        if self.screen != Screen::Blacksmith
+            || cmd.starts_with("buy:")
+            || cmd.starts_with("choose:")
+            || cmd.starts_with("sell:")
+        {
+            self.blacksmith_number_action = BlacksmithNumberAction::Buy;
+        }
         if self.screen == Screen::Title {
             if cmd == "start" || cmd == "confirm" {
                 self.screen = Screen::Inn;
@@ -599,6 +797,10 @@ impl Game {
 
     pub fn current_character(&self) -> Option<&Character> {
         self.party.get(self.current)
+    }
+
+    pub fn blacksmith_number_action(&self) -> &'static str {
+        self.blacksmith_number_action.command_prefix()
     }
     fn walk(&mut self, d: Facing, backwards: bool) {
         if !self.can_move(d) || (backwards && self.wall(d) != 0) {
@@ -966,6 +1168,7 @@ impl Game {
         ) {
             self.facing = self.facing.opposite();
         }
+        self.blacksmith_number_action = BlacksmithNumberAction::Buy;
         self.screen = Screen::Town;
         self.message = message.into();
     }
@@ -1034,9 +1237,28 @@ impl Game {
         const ARMOR: [u8; 6] = [156, 121, 122, 123, 124, 125];
         const MISC: [u8; 6] = [172, 171, 175, 178, 185, 192];
         match command {
-            "weapons" => self.shop_stock = Some(WEAPONS),
-            "armor" => self.shop_stock = Some(ARMOR),
-            "misc" => self.shop_stock = Some(MISC),
+            "weapons" => {
+                self.blacksmith_number_action = BlacksmithNumberAction::Buy;
+                self.shop_stock = Some(WEAPONS);
+            }
+            "armor" => {
+                self.blacksmith_number_action = BlacksmithNumberAction::Buy;
+                self.shop_stock = Some(ARMOR);
+            }
+            "misc" => {
+                self.blacksmith_number_action = BlacksmithNumberAction::Buy;
+                self.shop_stock = Some(MISC);
+            }
+            "choose-member" => {
+                self.blacksmith_number_action = BlacksmithNumberAction::ChooseMember;
+                self.message = "Choose a party member.".into();
+                return;
+            }
+            "sell-item" => {
+                self.blacksmith_number_action = BlacksmithNumberAction::Sell;
+                self.message = "Choose a backpack slot to sell.".into();
+                return;
+            }
             _ => {
                 if let Some(index) = command
                     .strip_prefix("buy:")
@@ -1064,6 +1286,7 @@ impl Game {
                     member.gold -= item.cost as u32;
                     member.backpack_items[slot] = item.id;
                     member.backpack_charges[slot] = item.max_charges;
+                    self.blacksmith_number_action = BlacksmithNumberAction::Buy;
                     self.message = format!("{} purchased for {} gold.", item.name, item.cost);
                     return;
                 }
@@ -1090,6 +1313,7 @@ impl Game {
                     member.gold = member.gold.saturating_add(value);
                     member.backpack_items[slot] = 0;
                     member.backpack_charges[slot] = 0;
+                    self.blacksmith_number_action = BlacksmithNumberAction::Buy;
                     self.message = format!("{} sold for {value} gold.", item.name);
                     return;
                 }
@@ -1680,6 +1904,37 @@ mod tests {
         assert_eq!(g.active_party_member(), Some(0));
         g.command("defend");
         assert_eq!(g.combat.as_ref().unwrap().round, 2);
+    }
+
+    #[test]
+    fn native_save_round_trips_complete_runtime_state() {
+        let save_path =
+            std::env::temp_dir().join(format!("mm1-round-trip-{}.json", std::process::id()));
+        let mut game = Game::load().unwrap();
+        game.command("start");
+        game.command("toggle:1");
+        game.command("toggle:2");
+        game.command("confirm");
+        game.x = 5;
+        game.y = 3;
+        game.properties[3 * 16 + 5] = 0x80;
+        game.cleared_specials[3 * 16 + 5] = true;
+        game.rumor_heard = true;
+        game.blacksmith_number_action = BlacksmithNumberAction::ChooseMember;
+        game.start_encounter();
+        game.screen = Screen::Combat;
+        let expected = serde_json::to_value(SaveGame::from_game(&game)).unwrap();
+
+        game.save(&save_path).unwrap();
+        let restored = Game::load_or_new(&save_path).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(SaveGame::from_game(&restored)).unwrap(),
+            expected
+        );
+        assert_eq!(restored.item(2).name, "DAGGER");
+        assert!(!save_path.with_extension("json.tmp").exists());
+        fs::remove_file(save_path).unwrap();
     }
 
     #[test]

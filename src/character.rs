@@ -1,16 +1,18 @@
 //! Native character state and the DOS roster compatibility boundary.
 
+use serde::{Deserialize, Serialize};
+
 pub const ROSTER_SLOTS: usize = 18;
 const RECORD_SIZE: usize = 127;
 const ROSTER_SIZE: usize = ROSTER_SLOTS * RECORD_SIZE + ROSTER_SLOTS;
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
 pub struct ValuePair {
     pub base: u8,
     pub current: u8,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 pub struct Character {
     pub name: String,
     pub sex: u8,
