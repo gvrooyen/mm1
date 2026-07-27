@@ -1233,12 +1233,20 @@ fn draw_generic_screen(frame: &mut [u8], view: &game::PlayerView<'_>, screen: ga
 
 fn draw_frame(frame: &mut [u8], title: &str) {
     draw_dos_text(frame, 24, 6, "----------------------------------", WHITE);
-    fill_rect(frame, 10, 24, 1, 152, WHITE);
-    fill_rect(frame, 307, 24, 1, 152, WHITE);
     draw_dos_text(frame, 24, 183, "----------------------------------", WHITE);
+    // 2x2 solid block glyphs at each corner of the frame.
+    fill_rect(frame, 8, 0, 16, 16, WHITE);
+    fill_rect(frame, 296, 0, 16, 16, WHITE);
+    fill_rect(frame, 8, 176, 16, 16, WHITE);
+    fill_rect(frame, 296, 176, 16, 16, WHITE);
+    // Vertical borders drawn as '!' character glyphs, matching the original
+    // DOS text-mode frame.  Each '!' is an 8x8 cell; 20 cells span the 160
+    // pixels between the top and bottom corner blocks.
+    for row in 0..20u32 {
+        draw_dos_text(frame, 8, 16 + row * 8, "!", WHITE);
+        draw_dos_text(frame, 304, 16 + row * 8, "!", WHITE);
+    }
     draw_centered_text(frame, 0, title, WHITE);
-    fill_rect(frame, 0, 176, 24, 12, BLACK);
-    fill_rect(frame, 296, 176, 24, 12, BLACK);
     draw_centered_text(frame, 192, "'ESC' TO GO BACK", WHITE);
 }
 
@@ -1252,10 +1260,14 @@ fn draw_main_menu(frame: &mut [u8]) {
     draw_centered_text(frame, 32, "MIGHT AND MAGIC", WHITE);
     draw_centered_text(frame, 48, "SECRET OF THE INNER SANCTUM", WHITE);
     draw_centered_text(frame, 72, "OPTIONS", WHITE);
+    draw_dos_text(frame, 132, 80, "-------", WHITE);
     draw_dos_text(frame, 40, 94, "'C'........CREATE NEW CHARACTERS", WHITE);
     draw_dos_text(frame, 40, 110, "'V'........VIEW ALL CHARACTERS", WHITE);
     draw_dos_text(frame, 40, 126, "'M'........GO TO TOWN", WHITE);
     draw_centered_text(frame, 176, "COPR. 1986,1987-JON VAN CANEGHEM", WHITE);
+    // Clear the "'ESC' TO GO BACK" line drawn by draw_frame before writing
+    // the copyright continuation so the two texts do not overlap.
+    fill_rect(frame, 0, 192, WIDTH, 8, BLACK);
     draw_centered_text(frame, 192, "ALL RIGHTS RESERVED", WHITE);
 }
 
@@ -1885,12 +1897,13 @@ fn dos_glyph(character: char) -> [u8; 8] {
         ':' => [0x00, 0x30, 0x30, 0x00, 0x00, 0x30, 0x30, 0x00],
         '.' => [0x00, 0x00, 0x00, 0x00, 0x00, 0x30, 0x30, 0x00],
         ',' => [0x00, 0x00, 0x00, 0x00, 0x30, 0x30, 0x60, 0x00],
-        '\'' => [0x30, 0x30, 0x60, 0x00, 0x00, 0x00, 0x00, 0x00],
+        '\'' => [0x18, 0x18, 0x18, 0x18, 0x00, 0x00, 0x00, 0x00],
         '(' => [0x0c, 0x18, 0x30, 0x30, 0x30, 0x18, 0x0c, 0x00],
         ')' => [0x60, 0x30, 0x18, 0x18, 0x18, 0x30, 0x60, 0x00],
         '=' => [0x00, 0x00, 0xfc, 0x00, 0xfc, 0x00, 0x00, 0x00],
         '*' => [0x00, 0x66, 0x3c, 0xff, 0x3c, 0x66, 0x00, 0x00],
         '@' => [0x7c, 0xc6, 0xde, 0xde, 0xde, 0xc0, 0x78, 0x00],
+        '!' => [0x18, 0x18, 0x18, 0x18, 0x00, 0x18, 0x18, 0x00],
         '?' => [0x78, 0xcc, 0x0c, 0x18, 0x30, 0x00, 0x30, 0x00],
         '-' => [0x00, 0x00, 0x00, 0xfc, 0x00, 0x00, 0x00, 0x00],
         '/' => [0x06, 0x0c, 0x18, 0x30, 0x60, 0xc0, 0x80, 0x00],
