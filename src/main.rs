@@ -63,12 +63,16 @@ const GAME_EGA_PALETTE: [[u8; 4]; 4] = [
 fn main() -> Result<(), Box<dyn Error>> {
     let args = parse_args()?;
 
-    if args.headless {
-        return run_headless(&args.commands, args.interactive);
-    }
-
     if args.browse {
         return run_asset_browser();
+    }
+
+    if args.reset {
+        reset_save_game(Path::new(SAVE_PATH))?;
+    }
+
+    if args.headless {
+        return run_headless(&args.commands, args.interactive);
     }
 
     run_windowed()
@@ -79,6 +83,7 @@ struct Args {
     headless: bool,
     interactive: bool,
     browse: bool,
+    reset: bool,
     commands: Vec<String>,
 }
 
@@ -91,6 +96,7 @@ fn parse_args() -> Result<Args, String> {
             "--headless" => args.headless = true,
             "--interactive" => args.interactive = true,
             "--browse" => args.browse = true,
+            "--reset" => args.reset = true,
             "--commands" => {
                 let value = input.next().ok_or("--commands requires a value")?;
                 args.commands.extend(
@@ -102,7 +108,7 @@ fn parse_args() -> Result<Args, String> {
             }
             "-h" | "--help" => {
                 println!(
-                    "Usage: mm1 [--headless [--interactive] [--commands LIST] | --browse]\n\n  --headless     Print the player view as JSON\n  --interactive  Read one command per stdin line and emit views as NDJSON\n  --commands     Repeatable comma-separated session commands\n  --browse       Browse original game assets"
+                    "Usage: mm1 [--reset] [--headless [--interactive] [--commands LIST] | --browse]\n\n  --reset        Delete the saved game and start over from the beginning\n  --headless     Print the player view as JSON\n  --interactive  Read one command per stdin line and emit views as NDJSON\n  --commands     Repeatable comma-separated session commands\n  --browse       Browse original game assets"
                 );
                 std::process::exit(0);
             }
@@ -113,6 +119,9 @@ fn parse_args() -> Result<Args, String> {
     if args.headless && args.browse {
         return Err("--headless and --browse cannot be used together".into());
     }
+    if args.reset && args.browse {
+        return Err("--reset and --browse cannot be used together".into());
+    }
     if !args.headless && !args.commands.is_empty() {
         return Err("--commands requires --headless".into());
     }
@@ -121,6 +130,18 @@ fn parse_args() -> Result<Args, String> {
     }
 
     Ok(args)
+}
+
+fn reset_save_game(save_path: &Path) -> Result<(), Box<dyn Error>> {
+    match fs::remove_file(save_path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "could not remove save game {}: {error}",
+            save_path.display()
+        )
+        .into()),
+    }
 }
 
 fn run_headless(commands: &[String], interactive: bool) -> Result<(), Box<dyn Error>> {
@@ -1972,6 +1993,28 @@ mod tests {
         assert_eq!(views[2]["kind"], "inn");
         assert_eq!(views[3]["kind"], "town");
         fs::remove_file(save_path).unwrap();
+    }
+
+    #[test]
+    fn reset_removes_a_saved_game_so_the_next_load_starts_fresh() {
+        let save_path = temporary_save_path("reset");
+        let mut game = game::Game::load().unwrap();
+        game.command("start");
+        game.save(&save_path).unwrap();
+        assert!(save_path.exists(), "save game should exist before reset");
+
+        reset_save_game(&save_path).unwrap();
+        assert!(!save_path.exists(), "save game should be removed by reset");
+
+        let reloaded = game::Game::load_or_new(&save_path).unwrap();
+        assert_eq!(reloaded.view().kind, game::Screen::Title);
+    }
+
+    #[test]
+    fn reset_is_a_noop_when_no_save_game_exists() {
+        let save_path = temporary_save_path("reset-missing");
+        assert!(!save_path.exists());
+        reset_save_game(&save_path).unwrap();
     }
 
     fn temporary_save_path(name: &str) -> PathBuf {

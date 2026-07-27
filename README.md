@@ -135,6 +135,14 @@ cargo run -- --headless
 cargo run -- --headless --commands start,toggle:1,toggle:2,confirm,forward,left
 ```
 
+Pass `--reset` to delete the saved game and start over from the beginning. It
+works with both headless and windowed modes:
+
+```sh
+cargo run -- --reset --headless
+cargo run -- --reset
+```
+
 For an interactive agent session, pass `--interactive`. The process emits the
 initial view as newline-delimited JSON (NDJSON), then reads one command per line
 from stdin and emits the resulting view as another NDJSON line. Empty input
