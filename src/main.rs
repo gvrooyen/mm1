@@ -973,7 +973,8 @@ struct GameWindow {
     pixels: Option<Pixels<'static>>,
     animation: TitleAnimation,
     next_update: Instant,
-    _title_music: Option<TitleMusic>,
+    title_music: Option<TitleMusic>,
+    showing_title: bool,
     game: game::Game,
     game_framebuffer: Vec<u8>,
     walls: Vec<WallSet>,
@@ -994,12 +995,13 @@ impl GameWindow {
         let monsters =
             decode_monsters(&fs::read("dos/MONPIX.DTA").expect("could not load monsters"))
                 .expect("could not decode monsters");
-        let mut window = Self {
+        let window = Self {
             window: None,
             pixels: None,
             animation,
             next_update: Instant::now() + TITLE_RING_INTERVAL,
-            _title_music: title_music,
+            title_music: title_music,
+            showing_title: true,
             game,
             game_framebuffer: vec![BLACK; (WIDTH * HEIGHT) as usize],
             walls,
@@ -1007,9 +1009,6 @@ impl GameWindow {
             modifiers: ModifiersState::empty(),
             save_path,
         };
-        if window.game.screen != game::Screen::Title {
-            window.redraw_game();
-        }
         window
     }
 
@@ -1020,7 +1019,7 @@ impl GameWindow {
     }
 
     fn key_pressed(&mut self, key: &Key) -> bool {
-        if self.game.screen != game::Screen::Title {
+        if !self.showing_title {
             let command = match key {
                 Key::Named(NamedKey::Escape) => Some("escape"),
                 Key::Named(NamedKey::Enter | NamedKey::Space) => Some(match self.game.screen {
@@ -1113,7 +1112,11 @@ impl GameWindow {
             || key == &Key::Named(NamedKey::Space)
             || key == &Key::Named(NamedKey::Enter)
         {
-            self.apply_command("start");
+            if self.game.screen == game::Screen::Title {
+                self.apply_command("start");
+            }
+            self.showing_title = false;
+            self.title_music = None;
             self.redraw_game();
             if let Some(window) = &self.window {
                 window.request_redraw();
@@ -1664,12 +1667,12 @@ impl ApplicationHandler for GameWindow {
                 }
             }
             WindowEvent::RedrawRequested => {
-                let frame = if self.game.screen == game::Screen::Title {
+                let frame = if self.showing_title {
                     self.animation.framebuffer()
                 } else {
                     &self.game_framebuffer
                 };
-                let palette = if self.game.screen == game::Screen::Title {
+                let palette = if self.showing_title {
                     &TITLE_EGA_PALETTE
                 } else {
                     &GAME_EGA_PALETTE
@@ -1686,7 +1689,7 @@ impl ApplicationHandler for GameWindow {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let now = Instant::now();
-        if now >= self.next_update {
+        if self.showing_title && now >= self.next_update {
             if self.animation.in_slideshow() {
                 self.animation.advance_slideshow();
             } else {
