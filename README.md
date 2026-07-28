@@ -66,15 +66,24 @@ outside Sorpigal remain explicitly unimplemented. The
 executable also decodes the original `SCREEN0` through
 `SCREEN9` artwork into a palette-indexed 320x200 framebuffer. It alternates
 between the first two title images with the DOS release's outside-in rectangular
-reveal in a 960x600 window using `pixels` and `winit`. Press Space to show or
-advance the `SCREEN2` through `SCREEN9` slideshow; each image advances
-automatically after ten seconds. The original PC-speaker title sequence is
-rendered to MP3 and played through `rodio`.
+reveal in a 960x600 window using `pixels` and `winit`. Press Space (or Tab) to
+show or advance the `SCREEN2` through `SCREEN9` slideshow; each image advances
+automatically after ten seconds. Press Enter or Escape to start the game. The
+original PC-speaker title sequence is rendered to MP3 and played through `rodio`.
 
 Escape starts the game from the animated title and otherwise backs out; close
-the window or press Ctrl-C/Ctrl-Q to quit. The engine atomically autosaves to
-`savegame.json` after every completed command and on clean shutdown, then
-resumes that state on the next graphical or headless invocation. The save
+the window or press Ctrl-C/Ctrl-Q to quit. Four function-key meta controls are
+available on every screen: **F1** shows a keyboard-shortcut help overlay
+(ESC dismisses it), **F2** opens the minimap overlay (a placeholder pending
+implementation, ESC dismisses it), **F9** asks for confirmation before deleting
+the save and restarting from the title, and **F10** saves and quits. Pressing
+**~** (tilde or backtick) opens a debug statistics overlay showing the current
+screen, position, facing, party/roster sizes, combat state, encounter level
+range, decoded item/monster/special counts, overlay data size, rumor status,
+and RNG state (ESC dismisses it). The engine
+atomically autosaves to `savegame.json` after every completed command and on
+clean shutdown, then resumes that state on the next graphical or headless
+invocation. The save
 contains native mutable state while immutable definitions continue to load from
 the original DOS assets. If
 an audio device or the title music is unavailable, the executable reports the

@@ -171,6 +171,26 @@ pub struct CombatView<'a> {
     pub treasure_gold: u32,
 }
 
+pub struct DebugStats {
+    pub screen: Screen,
+    pub position: (u8, u8),
+    pub facing: Facing,
+    pub party_size: usize,
+    pub roster_size: usize,
+    pub selected_count: usize,
+    pub current_index: usize,
+    pub combat_round: Option<u16>,
+    pub combat_enemies: Option<usize>,
+    pub encounter_level_range: (u8, u8),
+    pub items_defined: usize,
+    pub monsters_defined: usize,
+    pub specials_total: usize,
+    pub specials_cleared: usize,
+    pub overlay_data_size: usize,
+    pub rumor_heard: bool,
+    pub rng_state: u32,
+}
+
 #[derive(Clone, Debug)]
 struct ItemDef {
     id: u8,
@@ -909,6 +929,28 @@ impl Game {
 
     pub fn blacksmith_number_action(&self) -> &'static str {
         self.blacksmith_number_action.command_prefix()
+    }
+
+    pub fn debug_stats(&self) -> DebugStats {
+        DebugStats {
+            screen: self.screen,
+            position: (self.x, self.y),
+            facing: self.facing,
+            party_size: self.party.len(),
+            roster_size: self.roster.len(),
+            selected_count: self.selected.len(),
+            current_index: self.current,
+            combat_round: self.combat.as_ref().map(|c| c.round),
+            combat_enemies: self.combat.as_ref().map(|c| c.enemies.len()),
+            encounter_level_range: (self.encounter_min_level, self.encounter_max_level),
+            items_defined: self.items.len(),
+            monsters_defined: self.monsters.len(),
+            specials_total: self.specials.len(),
+            specials_cleared: self.cleared_specials.iter().filter(|&&c| c).count(),
+            overlay_data_size: self.overlay_data.len(),
+            rumor_heard: self.rumor_heard,
+            rng_state: self.rng,
+        }
     }
     fn walk(&mut self, d: Facing, backwards: bool) {
         if !self.can_move(d) || (backwards && self.wall(d) != 0) {

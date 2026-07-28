@@ -968,6 +968,15 @@ impl TitleMusic {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Overlay {
+    None,
+    Help,
+    Minimap,
+    Debug,
+    ConfirmRestart,
+}
+
 struct GameWindow {
     window: Option<Arc<Window>>,
     pixels: Option<Pixels<'static>>,
@@ -977,6 +986,8 @@ struct GameWindow {
     showing_title: bool,
     game: game::Game,
     game_framebuffer: Vec<u8>,
+    overlay_framebuffer: Vec<u8>,
+    overlay: Overlay,
     walls: Vec<WallSet>,
     monsters: Vec<Vec<u8>>,
     modifiers: ModifiersState,
@@ -1004,6 +1015,8 @@ impl GameWindow {
             showing_title: true,
             game,
             game_framebuffer: vec![BLACK; (WIDTH * HEIGHT) as usize],
+            overlay_framebuffer: vec![BLACK; (WIDTH * HEIGHT) as usize],
+            overlay: Overlay::None,
             walls,
             monsters,
             modifiers: ModifiersState::empty(),
@@ -1018,7 +1031,91 @@ impl GameWindow {
         }
     }
 
+    fn request_redraw(&self) {
+        if let Some(window) = &self.window {
+            window.request_redraw();
+        }
+    }
+
+    fn restart_game(&mut self) {
+        if let Err(error) = reset_save_game(&self.save_path) {
+            eprintln!("could not remove save game for restart: {error}");
+        }
+        match game::Game::load() {
+            Ok(fresh) => {
+                self.game = fresh;
+                self.animation.reset_to_title();
+                self.showing_title = true;
+                self.title_music = TitleMusic::start();
+            }
+            Err(error) => {
+                eprintln!("could not reload game for restart: {error}");
+            }
+        }
+        self.overlay = Overlay::None;
+        self.next_update = Instant::now() + TITLE_RING_INTERVAL;
+        self.request_redraw();
+    }
+
+    fn key_pressed_overlay(&mut self, key: &Key) -> bool {
+        match self.overlay {
+            Overlay::Help | Overlay::Minimap | Overlay::Debug => {
+                if key == &Key::Named(NamedKey::Escape) {
+                    self.overlay = Overlay::None;
+                    self.request_redraw();
+                }
+            }
+            Overlay::ConfirmRestart => {
+                if matches!(key, Key::Character(c) if c.eq_ignore_ascii_case("y")) {
+                    self.restart_game();
+                } else if key == &Key::Named(NamedKey::Escape)
+                    || matches!(key, Key::Character(c) if c.eq_ignore_ascii_case("n"))
+                {
+                    self.overlay = Overlay::None;
+                    self.request_redraw();
+                }
+            }
+            Overlay::None => {}
+        }
+        false
+    }
+
     fn key_pressed(&mut self, key: &Key) -> bool {
+        if self.overlay != Overlay::None {
+            return self.key_pressed_overlay(key);
+        }
+
+        // Function keys are meta-game controls available on every screen.
+        match key {
+            Key::Named(NamedKey::F1) => {
+                self.overlay = Overlay::Help;
+                self.request_redraw();
+                return false;
+            }
+            Key::Named(NamedKey::F2) => {
+                self.overlay = Overlay::Minimap;
+                self.request_redraw();
+                return false;
+            }
+            Key::Named(NamedKey::F9) => {
+                self.overlay = Overlay::ConfirmRestart;
+                self.request_redraw();
+                return false;
+            }
+            Key::Named(NamedKey::F10) => {
+                if let Err(error) = self.game.save(&self.save_path) {
+                    eprintln!("could not save game on quit: {error}");
+                }
+                return true;
+            }
+            Key::Character(c) if c == "`" || c == "~" => {
+                self.overlay = Overlay::Debug;
+                self.request_redraw();
+                return false;
+            }
+            _ => {}
+        }
+
         if !self.showing_title {
             let command = match key {
                 Key::Named(NamedKey::Escape) => Some("escape"),
@@ -1108,23 +1205,18 @@ impl GameWindow {
             }
             return false;
         }
-        if key == &Key::Named(NamedKey::Escape)
-            || key == &Key::Named(NamedKey::Space)
-            || key == &Key::Named(NamedKey::Enter)
-        {
+        if key == &Key::Named(NamedKey::Escape) || key == &Key::Named(NamedKey::Enter) {
             if self.game.screen == game::Screen::Title {
                 self.apply_command("start");
             }
             self.showing_title = false;
             self.title_music = None;
             self.redraw_game();
-            if let Some(window) = &self.window {
-                window.request_redraw();
-            }
+            self.request_redraw();
             return false;
         } else if key == &Key::Character("q".into()) {
             return true;
-        } else if key == &Key::Named(NamedKey::Tab) {
+        } else if key == &Key::Named(NamedKey::Space) || key == &Key::Named(NamedKey::Tab) {
             if self.animation.in_slideshow() {
                 self.animation.advance_slideshow();
             } else {
@@ -1136,9 +1228,7 @@ impl GameWindow {
                 } else {
                     TITLE_RING_INTERVAL
                 };
-            if let Some(window) = &self.window {
-                window.request_redraw();
-            }
+            self.request_redraw();
         }
 
         false
@@ -1613,6 +1703,208 @@ fn draw_message(frame: &mut [u8], message: &str) {
     }
 }
 
+fn draw_overlay(frame: &mut [u8], overlay: Overlay, game: &game::Game) {
+    match overlay {
+        Overlay::Help => draw_help_overlay(frame),
+        Overlay::Minimap => draw_minimap_overlay(frame),
+        Overlay::Debug => draw_debug_overlay(frame, &game.debug_stats()),
+        Overlay::ConfirmRestart => draw_restart_confirmation(frame),
+        Overlay::None => {}
+    }
+}
+
+fn draw_help_overlay(frame: &mut [u8]) {
+    frame.fill(BLACK);
+    draw_frame(frame, "HELP");
+    draw_centered_text(frame, 24, "KEYBOARD SHORTCUTS", WHITE);
+    draw_dos_text(frame, 32, 42, "MOVEMENT", CYAN);
+    draw_dos_text(frame, 48, 52, "^   FORWARD", WHITE);
+    draw_dos_text(frame, 48, 62, "V   BACK", WHITE);
+    draw_dos_text(frame, 48, 72, "<   TURN LEFT", WHITE);
+    draw_dos_text(frame, 48, 82, ">   TURN RIGHT", WHITE);
+    draw_dos_text(frame, 32, 96, "ACTIONS", CYAN);
+    draw_dos_text(frame, 48, 106, "B   BASH", WHITE);
+    draw_dos_text(frame, 48, 116, "U   UNLOCK", WHITE);
+    draw_dos_text(frame, 48, 126, "1-6 VIEW CHARACTER", WHITE);
+    draw_dos_text(frame, 32, 140, "META CONTROLS", CYAN);
+    draw_dos_text(frame, 48, 150, "F1  HELP", WHITE);
+    draw_dos_text(frame, 48, 158, "F2  MINIMAP", WHITE);
+    draw_dos_text(frame, 48, 166, "~   DEBUG STATS", WHITE);
+    draw_dos_text(frame, 48, 174, "F9  RESTART GAME", WHITE);
+}
+
+fn draw_minimap_overlay(frame: &mut [u8]) {
+    frame.fill(BLACK);
+    draw_frame(frame, "MINIMAP");
+    draw_centered_text(frame, 80, "NOT YET IMPLEMENTED", WHITE);
+    draw_centered_text(frame, 96, "F2 PLACEHOLDER", CYAN);
+}
+
+fn draw_debug_overlay(frame: &mut [u8], stats: &game::DebugStats) {
+    const LABEL_X: u32 = 16;
+    const VALUE_X: u32 = 128;
+
+    frame.fill(BLACK);
+    draw_frame(frame, "DEBUG STATS");
+
+    let screen_name = match stats.screen {
+        game::Screen::Title => "TITLE",
+        game::Screen::Menu => "MENU",
+        game::Screen::CreateCharacter => "CREATE",
+        game::Screen::Roster => "ROSTER",
+        game::Screen::RosterCharacter => "ROSTER CHR",
+        game::Screen::Inn => "INN",
+        game::Screen::InnCharacter => "INN CHR",
+        game::Screen::Town => "TOWN",
+        game::Screen::Food => "FOOD",
+        game::Screen::Tavern => "TAVERN",
+        game::Screen::Temple => "TEMPLE",
+        game::Screen::Training => "TRAINING",
+        game::Screen::Blacksmith => "BLACKSMITH",
+        game::Screen::Leprechaun => "LEPRECHAUN",
+        game::Screen::Statue => "STATUE",
+        game::Screen::Passage => "PASSAGE",
+        game::Screen::Encounter => "ENCOUNTER",
+        game::Screen::Combat => "COMBAT",
+        game::Screen::Treasure => "TREASURE",
+        game::Screen::Character => "CHARACTER",
+    };
+    let facing_name = match stats.facing {
+        game::Facing::North => "NORTH",
+        game::Facing::East => "EAST",
+        game::Facing::South => "SOUTH",
+        game::Facing::West => "WEST",
+    };
+
+    let mut y = 24;
+    draw_dos_text(frame, LABEL_X, y, "SCREEN", CYAN);
+    draw_dos_text(frame, VALUE_X, y, screen_name, WHITE);
+    y += 10;
+    draw_dos_text(frame, LABEL_X, y, "POSITION", CYAN);
+    draw_dos_text(
+        frame,
+        VALUE_X,
+        y,
+        &format!("({},{})", stats.position.0, stats.position.1),
+        WHITE,
+    );
+    y += 10;
+    draw_dos_text(frame, LABEL_X, y, "FACING", CYAN);
+    draw_dos_text(frame, VALUE_X, y, facing_name, WHITE);
+    y += 14;
+
+    draw_dos_text(frame, LABEL_X, y, "PARTY SIZE", CYAN);
+    draw_dos_text(frame, VALUE_X, y, &format!("{}", stats.party_size), WHITE);
+    y += 10;
+    draw_dos_text(frame, LABEL_X, y, "ROSTER SIZE", CYAN);
+    draw_dos_text(frame, VALUE_X, y, &format!("{}", stats.roster_size), WHITE);
+    y += 10;
+    draw_dos_text(frame, LABEL_X, y, "SELECTED", CYAN);
+    draw_dos_text(
+        frame,
+        VALUE_X,
+        y,
+        &format!("{}", stats.selected_count),
+        WHITE,
+    );
+    y += 10;
+    draw_dos_text(frame, LABEL_X, y, "CURRENT IDX", CYAN);
+    draw_dos_text(
+        frame,
+        VALUE_X,
+        y,
+        &format!("{}", stats.current_index),
+        WHITE,
+    );
+    y += 14;
+
+    if let Some(round) = stats.combat_round {
+        draw_dos_text(frame, LABEL_X, y, "COMBAT ROUND", CYAN);
+        draw_dos_text(frame, VALUE_X, y, &format!("{}", round), WHITE);
+        y += 10;
+    }
+    if let Some(enemies) = stats.combat_enemies {
+        draw_dos_text(frame, LABEL_X, y, "ENEMIES", CYAN);
+        draw_dos_text(frame, VALUE_X, y, &format!("{}", enemies), WHITE);
+        y += 10;
+    }
+    draw_dos_text(frame, LABEL_X, y, "ENC LVL", CYAN);
+    draw_dos_text(
+        frame,
+        VALUE_X,
+        y,
+        &format!(
+            "{}-{}",
+            stats.encounter_level_range.0, stats.encounter_level_range.1
+        ),
+        WHITE,
+    );
+    y += 14;
+
+    draw_dos_text(frame, LABEL_X, y, "ITEMS DEFD", CYAN);
+    draw_dos_text(
+        frame,
+        VALUE_X,
+        y,
+        &format!("{}", stats.items_defined),
+        WHITE,
+    );
+    y += 10;
+    draw_dos_text(frame, LABEL_X, y, "MONSTERS", CYAN);
+    draw_dos_text(
+        frame,
+        VALUE_X,
+        y,
+        &format!("{}", stats.monsters_defined),
+        WHITE,
+    );
+    y += 10;
+    draw_dos_text(frame, LABEL_X, y, "SPECIALS", CYAN);
+    draw_dos_text(
+        frame,
+        VALUE_X,
+        y,
+        &format!("{}/{}", stats.specials_cleared, stats.specials_total),
+        WHITE,
+    );
+    y += 10;
+    draw_dos_text(frame, LABEL_X, y, "OVR DATA", CYAN);
+    draw_dos_text(
+        frame,
+        VALUE_X,
+        y,
+        &format!("{}B", stats.overlay_data_size),
+        WHITE,
+    );
+    y += 10;
+    draw_dos_text(frame, LABEL_X, y, "RUMOR HEARD", CYAN);
+    draw_dos_text(
+        frame,
+        VALUE_X,
+        y,
+        if stats.rumor_heard { "YES" } else { "NO" },
+        WHITE,
+    );
+    y += 10;
+    draw_dos_text(frame, LABEL_X, y, "RNG STATE", CYAN);
+    draw_dos_text(
+        frame,
+        VALUE_X,
+        y,
+        &format!("0x{:08X}", stats.rng_state),
+        WHITE,
+    );
+}
+
+fn draw_restart_confirmation(frame: &mut [u8]) {
+    frame.fill(BLACK);
+    draw_frame(frame, "RESTART GAME");
+    draw_centered_text(frame, 56, "ARE YOU SURE?", WHITE);
+    draw_centered_text(frame, 76, "ALL PROGRESS WILL BE LOST", CYAN);
+    draw_centered_text(frame, 112, "'Y' TO RESTART", WHITE);
+    draw_centered_text(frame, 128, "'N' OR ESC TO CANCEL", WHITE);
+}
+
 impl ApplicationHandler for GameWindow {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
@@ -1667,17 +1959,34 @@ impl ApplicationHandler for GameWindow {
                 }
             }
             WindowEvent::RedrawRequested => {
-                let frame = if self.showing_title {
-                    self.animation.framebuffer()
-                } else {
-                    &self.game_framebuffer
-                };
-                let palette = if self.showing_title {
+                let is_title = self.showing_title;
+                let palette = if is_title {
                     &TITLE_EGA_PALETTE
                 } else {
                     &GAME_EGA_PALETTE
                 };
-                copy_to_rgba_with_palette(frame, pixels.frame_mut(), palette);
+                if self.overlay != Overlay::None {
+                    if is_title {
+                        self.overlay_framebuffer
+                            .copy_from_slice(self.animation.framebuffer());
+                    } else {
+                        self.overlay_framebuffer
+                            .copy_from_slice(&self.game_framebuffer[..]);
+                    }
+                    draw_overlay(&mut self.overlay_framebuffer, self.overlay, &self.game);
+                    copy_to_rgba_with_palette(
+                        &self.overlay_framebuffer,
+                        pixels.frame_mut(),
+                        palette,
+                    );
+                } else {
+                    let frame = if is_title {
+                        self.animation.framebuffer()
+                    } else {
+                        &self.game_framebuffer[..]
+                    };
+                    copy_to_rgba_with_palette(frame, pixels.frame_mut(), palette);
+                }
                 if let Err(error) = pixels.render() {
                     eprintln!("could not render the title screen: {error}");
                     event_loop.exit();
@@ -1736,6 +2045,14 @@ impl TitleAnimation {
 
     fn framebuffer(&self) -> &[u8] {
         &self.framebuffer
+    }
+
+    fn reset_to_title(&mut self) {
+        self.image = 0;
+        self.ring = 0;
+        self.scene = None;
+        self.framebuffer.fill(BLACK);
+        self.advance_title();
     }
 
     fn in_slideshow(&self) -> bool {
@@ -1910,6 +2227,7 @@ fn dos_glyph(character: char) -> [u8; 8] {
         '?' => [0x78, 0xcc, 0x0c, 0x18, 0x30, 0x00, 0x30, 0x00],
         '-' => [0x00, 0x00, 0x00, 0xfc, 0x00, 0x00, 0x00, 0x00],
         '/' => [0x06, 0x0c, 0x18, 0x30, 0x60, 0xc0, 0x80, 0x00],
+        '~' => [0x00, 0x00, 0x00, 0x7e, 0x00, 0x00, 0x00, 0x00],
         '^' => [0x10, 0x38, 0x6c, 0xc6, 0x00, 0x00, 0x00, 0x00],
         '<' => [0x0c, 0x18, 0x30, 0x60, 0x30, 0x18, 0x0c, 0x00],
         '>' => [0x60, 0x30, 0x18, 0x0c, 0x18, 0x30, 0x60, 0x00],
@@ -1960,7 +2278,7 @@ mod tests {
     }
 
     #[test]
-    fn title_keys_start_and_advance_the_slideshow_or_exit() {
+    fn title_keys_start_the_game_with_escape_or_enter_and_space_starts_the_slideshow() {
         let save_path = temporary_save_path("title-keys");
         let mut window = GameWindow::new(
             TitleAnimation::load().unwrap(),
@@ -1969,16 +2287,37 @@ mod tests {
             save_path.clone(),
         );
 
-        assert!(!window.key_pressed(&Key::Named(NamedKey::Space)));
+        // Escape starts the game.
+        assert!(!window.key_pressed(&Key::Named(NamedKey::Escape)));
         assert_eq!(window.game.screen, game::Screen::Menu);
+
+        // Enter also starts the game.
         let mut window = GameWindow::new(
             TitleAnimation::load().unwrap(),
             None,
             game::Game::load().unwrap(),
             save_path.clone(),
         );
-        assert!(!window.key_pressed(&Key::Named(NamedKey::Escape)));
+        assert!(!window.key_pressed(&Key::Named(NamedKey::Enter)));
         assert_eq!(window.game.screen, game::Screen::Menu);
+
+        // Space starts the slideshow instead of the game.
+        let mut window = GameWindow::new(
+            TitleAnimation::load().unwrap(),
+            None,
+            game::Game::load().unwrap(),
+            save_path.clone(),
+        );
+        assert!(!window.key_pressed(&Key::Named(NamedKey::Space)));
+        assert_eq!(window.game.screen, game::Screen::Title);
+        assert!(window.animation.in_slideshow());
+
+        // A second Space advances the slideshow.
+        let scene_before = window.animation.scene;
+        assert!(!window.key_pressed(&Key::Named(NamedKey::Space)));
+        assert!(window.animation.in_slideshow());
+        assert_ne!(window.animation.scene, scene_before);
+
         fs::remove_file(save_path).unwrap();
     }
 
@@ -2035,6 +2374,74 @@ mod tests {
 
     fn temporary_save_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("mm1-{name}-{}.json", std::process::id()))
+    }
+
+    #[test]
+    fn help_overlay_renders_text_pixels() {
+        let mut frame = vec![BLACK; (WIDTH * HEIGHT) as usize];
+        draw_help_overlay(&mut frame);
+        // The title "KEYBOARD SHORTCUTS" is centered near y=24.
+        // Verify non-black pixels exist in the title row band.
+        let title_band = &frame[24 * WIDTH as usize..32 * WIDTH as usize];
+        assert!(
+            title_band.iter().any(|&p| p != BLACK),
+            "title text should be visible"
+        );
+        // The "META CONTROLS" section label at y=140 should have pixels.
+        let meta_band = &frame[140 * WIDTH as usize..148 * WIDTH as usize];
+        assert!(
+            meta_band.iter().any(|&p| p != BLACK),
+            "meta controls label should be visible"
+        );
+        // The frame border at x=8, y=0 should be white (corner block).
+        assert_eq!(
+            frame[0 * WIDTH as usize + 8],
+            WHITE,
+            "top-left corner should be white"
+        );
+    }
+
+    #[test]
+    fn restart_confirmation_renders_prompt() {
+        let mut frame = vec![BLACK; (WIDTH * HEIGHT) as usize];
+        draw_restart_confirmation(&mut frame);
+        // "ARE YOU SURE?" at y=56
+        let band = &frame[56 * WIDTH as usize..64 * WIDTH as usize];
+        assert!(
+            band.iter().any(|&p| p != BLACK),
+            "confirmation prompt should be visible"
+        );
+    }
+
+    #[test]
+    fn minimap_overlay_renders_placeholder() {
+        let mut frame = vec![BLACK; (WIDTH * HEIGHT) as usize];
+        draw_minimap_overlay(&mut frame);
+        let band = &frame[80 * WIDTH as usize..88 * WIDTH as usize];
+        assert!(
+            band.iter().any(|&p| p != BLACK),
+            "placeholder text should be visible"
+        );
+    }
+
+    #[test]
+    fn debug_overlay_renders_text_pixels() {
+        let game = game::Game::load().unwrap();
+        let stats = game.debug_stats();
+        let mut frame = vec![BLACK; (WIDTH * HEIGHT) as usize];
+        draw_debug_overlay(&mut frame, &stats);
+        // "SCREEN" label at y=24 should have pixels.
+        let band = &frame[24 * WIDTH as usize..32 * WIDTH as usize];
+        assert!(
+            band.iter().any(|&p| p != BLACK),
+            "debug overlay should show screen label"
+        );
+        // "RNG STATE" near the bottom should have pixels.
+        let rng_band = &frame[168 * WIDTH as usize..176 * WIDTH as usize];
+        assert!(
+            rng_band.iter().any(|&p| p != BLACK),
+            "debug overlay should show RNG state"
+        );
     }
 
     #[test]
@@ -2118,6 +2525,188 @@ mod tests {
             ModifiersState::empty()
         ));
         assert!(!is_quit_shortcut(&Key::Named(NamedKey::Escape), control));
+    }
+
+    #[test]
+    fn f1_opens_help_overlay_and_escape_dismisses_it() {
+        let save_path = temporary_save_path("f1-help");
+        let mut window = GameWindow::new(
+            TitleAnimation::load().unwrap(),
+            None,
+            game::Game::load().unwrap(),
+            save_path.clone(),
+        );
+
+        assert!(!window.key_pressed(&Key::Named(NamedKey::F1)));
+        assert_eq!(window.overlay, Overlay::Help);
+
+        // While the overlay is up, a movement key must not reach the game.
+        assert!(!window.key_pressed(&Key::Named(NamedKey::ArrowUp)));
+        assert_eq!(window.overlay, Overlay::Help);
+
+        assert!(!window.key_pressed(&Key::Named(NamedKey::Escape)));
+        assert_eq!(window.overlay, Overlay::None);
+
+        fs::remove_file(save_path).ok();
+    }
+
+    #[test]
+    fn f2_opens_minimap_placeholder_and_escape_dismisses_it() {
+        let save_path = temporary_save_path("f2-minimap");
+        let mut window = GameWindow::new(
+            TitleAnimation::load().unwrap(),
+            None,
+            game::Game::load().unwrap(),
+            save_path.clone(),
+        );
+
+        assert!(!window.key_pressed(&Key::Named(NamedKey::F2)));
+        assert_eq!(window.overlay, Overlay::Minimap);
+
+        assert!(!window.key_pressed(&Key::Named(NamedKey::Escape)));
+        assert_eq!(window.overlay, Overlay::None);
+
+        fs::remove_file(save_path).ok();
+    }
+
+    #[test]
+    fn tilde_opens_debug_overlay_and_escape_dismisses_it() {
+        let save_path = temporary_save_path("tilde-debug");
+        let mut window = GameWindow::new(
+            TitleAnimation::load().unwrap(),
+            None,
+            game::Game::load().unwrap(),
+            save_path.clone(),
+        );
+
+        // Both backtick and tilde should open the debug overlay.
+        assert!(!window.key_pressed(&Key::Character("~".into())));
+        assert_eq!(window.overlay, Overlay::Debug);
+
+        // While the overlay is up, a movement key must not reach the game.
+        assert!(!window.key_pressed(&Key::Named(NamedKey::ArrowUp)));
+        assert_eq!(window.overlay, Overlay::Debug);
+
+        assert!(!window.key_pressed(&Key::Named(NamedKey::Escape)));
+        assert_eq!(window.overlay, Overlay::None);
+
+        // Backtick also works.
+        assert!(!window.key_pressed(&Key::Character("`".into())));
+        assert_eq!(window.overlay, Overlay::Debug);
+        assert!(!window.key_pressed(&Key::Named(NamedKey::Escape)));
+        assert_eq!(window.overlay, Overlay::None);
+
+        fs::remove_file(save_path).ok();
+    }
+
+    #[test]
+    fn debug_stats_reflect_game_state() {
+        let save_path = temporary_save_path("debug-stats");
+        let mut window = GameWindow::new(
+            TitleAnimation::load().unwrap(),
+            None,
+            game::Game::load().unwrap(),
+            save_path.clone(),
+        );
+
+        // On the title screen, no party is selected yet.
+        let stats = window.game.debug_stats();
+        assert_eq!(stats.screen, game::Screen::Title);
+        assert_eq!(stats.party_size, 0);
+        assert_eq!(stats.combat_round, None);
+
+        // After starting and entering the menu, the roster is populated.
+        window.key_pressed(&Key::Named(NamedKey::Enter));
+        let stats = window.game.debug_stats();
+        assert_eq!(stats.screen, game::Screen::Menu);
+        assert!(stats.roster_size > 0, "roster should have characters");
+
+        fs::remove_file(save_path).ok();
+    }
+
+    #[test]
+    fn f9_restart_requires_confirmation_and_y_restarts() {
+        let save_path = temporary_save_path("f9-restart");
+        let mut window = GameWindow::new(
+            TitleAnimation::load().unwrap(),
+            None,
+            game::Game::load().unwrap(),
+            save_path.clone(),
+        );
+        // Advance into the game so restart is meaningful.
+        window.key_pressed(&Key::Named(NamedKey::Enter));
+        assert_eq!(window.game.screen, game::Screen::Menu);
+        window.game.save(&save_path).unwrap();
+        assert!(save_path.exists());
+
+        // F9 opens the confirmation overlay, not an immediate restart.
+        assert!(!window.key_pressed(&Key::Named(NamedKey::F9)));
+        assert_eq!(window.overlay, Overlay::ConfirmRestart);
+        assert_eq!(window.game.screen, game::Screen::Menu);
+
+        // A movement key is swallowed while the confirmation is open.
+        assert!(!window.key_pressed(&Key::Named(NamedKey::ArrowUp)));
+        assert_eq!(window.overlay, Overlay::ConfirmRestart);
+
+        // Confirming removes the save and returns to the title screen.
+        assert!(!window.key_pressed(&Key::Character("y".into())));
+        assert_eq!(window.overlay, Overlay::None);
+        assert_eq!(window.game.screen, game::Screen::Title);
+        assert!(
+            !save_path.exists(),
+            "save game should be deleted on restart"
+        );
+
+        fs::remove_file(save_path).ok();
+    }
+
+    #[test]
+    fn f9_restart_canceled_by_n_or_escape() {
+        let save_path = temporary_save_path("f9-cancel");
+        let mut window = GameWindow::new(
+            TitleAnimation::load().unwrap(),
+            None,
+            game::Game::load().unwrap(),
+            save_path.clone(),
+        );
+        window.key_pressed(&Key::Named(NamedKey::Enter));
+        window.game.save(&save_path).unwrap();
+
+        assert!(!window.key_pressed(&Key::Named(NamedKey::F9)));
+        assert_eq!(window.overlay, Overlay::ConfirmRestart);
+
+        // 'N' cancels.
+        assert!(!window.key_pressed(&Key::Character("n".into())));
+        assert_eq!(window.overlay, Overlay::None);
+        assert_eq!(window.game.screen, game::Screen::Menu);
+        assert!(save_path.exists(), "save game should survive cancel");
+
+        // Escape also cancels.
+        assert!(!window.key_pressed(&Key::Named(NamedKey::F9)));
+        assert_eq!(window.overlay, Overlay::ConfirmRestart);
+        assert!(!window.key_pressed(&Key::Named(NamedKey::Escape)));
+        assert_eq!(window.overlay, Overlay::None);
+
+        fs::remove_file(save_path).ok();
+    }
+
+    #[test]
+    fn f10_save_and_quit_signals_exit() {
+        let save_path = temporary_save_path("f10-quit");
+        let mut window = GameWindow::new(
+            TitleAnimation::load().unwrap(),
+            None,
+            game::Game::load().unwrap(),
+            save_path.clone(),
+        );
+        window.key_pressed(&Key::Named(NamedKey::Enter));
+        assert_eq!(window.game.screen, game::Screen::Menu);
+
+        // F10 returns true so the event loop exits (save-and-quit).
+        assert!(window.key_pressed(&Key::Named(NamedKey::F10)));
+        assert!(save_path.exists(), "save game should be written on F10");
+
+        fs::remove_file(save_path).ok();
     }
 
     #[test]
